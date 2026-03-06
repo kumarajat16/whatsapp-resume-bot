@@ -55,7 +55,7 @@ In your Railway project, go to **Variables** and add:
 |---|---|
 | `TWILIO_ACCOUNT_SID` | Your Twilio Account SID |
 | `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token |
-| `OPENAI_API_KEY` | Your OpenAI API key |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
 
 > `PORT` is set automatically by Railway — do not set it manually.
 
@@ -79,5 +79,5 @@ Go to: Twilio Console → Messaging → Try it out → Send a WhatsApp message �
 |---|---|
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID (starts with AC) |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token |
-| `OPENAI_API_KEY` | OpenAI API key (starts with sk-) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (starts with sk-ant-) |
 | `PORT` | Server port (set automatically by Railway) |
