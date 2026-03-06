@@ -30,6 +30,16 @@ const sessions = new Map();
 // Temp file store: token -> { filePath } (auto-cleaned after 10 min)
 const tempFiles = new Map();
 
+// Strip markdown code fences Claude sometimes wraps JSON in, then parse
+function parseClaudeJson(raw) {
+  console.log('Claude raw response:', raw);
+  const cleaned = raw
+    .replace(/```json/g, '')
+    .replace(/```/g, '')
+    .trim();
+  return JSON.parse(cleaned);
+}
+
 function storeTempFile(filePath) {
   const token = crypto.randomUUID();
   const cleanup = setTimeout(() => {
@@ -211,10 +221,13 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: `Extract resume data from this document:\n\n${text.slice(0, 8000)}` }],
     });
-    resumeData = JSON.parse(extraction.content[0].text);
+    resumeData = parseClaudeJson(extraction.content[0].text);
   } catch (err) {
-    console.error('Resume data extraction error:', err);
-    resumeData = {};
+    console.error('Resume data extraction error:', err.message);
+    // Fall back: start a normal session so Claude can ask for missing info
+    sessions.set(from, { messages: [], resumeData: {} });
+    const fallbackReply = await askClaude(from, 'I uploaded my resume but the data could not be parsed automatically. Please ask me for my details.');
+    return { text: 'I had trouble reading your resume data. Let me ask you a few questions instead.\n\n' + fallbackReply };
   }
 
   // Create session with pre-loaded data
@@ -273,7 +286,7 @@ async function buildAndSendResume(from, messages, existingData) {
 
     let resumeData = existingData;
     try {
-      const fresh = JSON.parse(extraction.content[0].text);
+      const fresh = parseClaudeJson(extraction.content[0].text);
       // Fresh conversation data takes precedence; fall back to pre-loaded data
       resumeData = {
         name: fresh.name || existingData.name || '',
@@ -285,8 +298,8 @@ async function buildAndSendResume(from, messages, existingData) {
         projects: fresh.projects && fresh.projects.length ? fresh.projects : (existingData.projects || []),
         hobbies: fresh.hobbies && fresh.hobbies.length ? fresh.hobbies : (existingData.hobbies || []),
       };
-    } catch {
-      console.error('Failed to parse final resume JSON, using existing data');
+    } catch (err) {
+      console.error('Failed to parse final resume JSON:', err.message, '— using existing data');
     }
 
     const filePath = await generateDocx(resumeData);
