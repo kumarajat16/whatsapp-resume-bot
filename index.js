@@ -4,6 +4,15 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
+app.get('/health', (req, res) => {
+  res.json({
+    ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+    TWILIO_ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN: !!process.env.TWILIO_AUTH_TOKEN,
+    PORT: process.env.PORT,
+  });
+});
+
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
