@@ -450,36 +450,21 @@ async function downloadTwilioMedia(mediaUrl, contentType) {
 
 async function buildAndSendResume(from, messages, existingData) {
   try {
-    // Extract final resume data from the conversation using a clean user-only message
-    const extraction = await anthropic.messages.create({
+    const resumeData = existingData;
+
+    // Stateless Claude call — single user message, no conversation history, no system prompt
+    const response = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 1024,
-      system: EXTRACT_PROMPT,
+      max_tokens: 2000,
       messages: [
         {
           role: 'user',
-          content: 'Create a professional resume from the following structured data:\n\n' + JSON.stringify(existingData),
+          content: 'Create a professional resume from this structured data:\n\n' + JSON.stringify(resumeData),
         },
       ],
     });
 
-    let resumeData = existingData;
-    try {
-      const fresh = parseStructuredText(extraction.content[0].text);
-      // Fresh conversation data takes precedence; fall back to pre-loaded data
-      resumeData = {
-        name: fresh.name || existingData.name || '',
-        city: fresh.city || existingData.city || '',
-        summary: fresh.summary || existingData.summary || '',
-        education: fresh.education && fresh.education.length ? fresh.education : (existingData.education || []),
-        experience: fresh.experience && fresh.experience.length ? fresh.experience : (existingData.experience || []),
-        skills: fresh.skills && fresh.skills.length ? fresh.skills : (existingData.skills || []),
-        projects: fresh.projects && fresh.projects.length ? fresh.projects : (existingData.projects || []),
-        hobbies: fresh.hobbies && fresh.hobbies.length ? fresh.hobbies : (existingData.hobbies || []),
-      };
-    } catch (err) {
-      console.error('Failed to parse resume structured text:', err.message, '— using existing data');
-    }
+    console.log('Resume generation Claude response:', response.content[0].text.slice(0, 200));
 
     const filePath = await generateDocx(resumeData);
     const token = storeTempFile(filePath);
