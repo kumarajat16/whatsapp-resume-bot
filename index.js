@@ -30,14 +30,70 @@ const sessions = new Map();
 // Temp file store: token -> { filePath } (auto-cleaned after 10 min)
 const tempFiles = new Map();
 
-// Strip markdown code fences Claude sometimes wraps JSON in, then parse
-function parseClaudeJson(raw) {
+// Parse Claude's structured plain-text response into a resume data object
+function parseStructuredText(raw) {
   console.log('Claude raw response:', raw);
-  const cleaned = raw
-    .replace(/```json/g, '')
-    .replace(/```/g, '')
-    .trim();
-  return JSON.parse(cleaned);
+
+  const result = {
+    name: '',
+    city: '',
+    summary: '',
+    education: [],
+    experience: [],
+    skills: [],
+    projects: [],
+    hobbies: [],
+  };
+
+  const lines = raw.split('\n');
+  let currentSection = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Single-value fields: "Name: John Doe"
+    const inlineMatch = trimmed.match(/^(Name|City|Summary):\s*(.+)$/i);
+    if (inlineMatch) {
+      result[inlineMatch[1].toLowerCase()] = inlineMatch[2].trim();
+      currentSection = inlineMatch[1].toLowerCase();
+      continue;
+    }
+
+    // Section headers: "Education:", "Experience:", etc.
+    const sectionMatch = trimmed.match(/^(Education|Experience|Skills|Projects|Hobbies):\s*(.*)$/i);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].toLowerCase();
+      continue;
+    }
+
+    // Bullet points under a list section
+    if (currentSection && (trimmed.startsWith('*') || trimmed.startsWith('-') || trimmed.startsWith('•'))) {
+      const val = trimmed.replace(/^[*\-•]\s*/, '').trim();
+      if (!val) continue;
+
+      if (currentSection === 'education') {
+        const parts = val.split(',').map(s => s.trim());
+        result.education.push({
+          degree: parts[0] || val,
+          institution: parts[1] || '',
+          year: parts[2] || '',
+        });
+      } else if (currentSection === 'experience') {
+        const parts = val.split(',').map(s => s.trim());
+        result.experience.push({
+          title: parts[0] || val,
+          company: parts[1] || '',
+          duration: parts[2] || '',
+          responsibilities: parts.slice(3).join(', '),
+        });
+      } else if (Array.isArray(result[currentSection])) {
+        result[currentSection].push(val);
+      }
+    }
+  }
+
+  return result;
 }
 
 function storeTempFile(filePath) {
@@ -83,20 +139,32 @@ Rules:
 - If the user replies YES (or yes / y), respond with exactly this token and nothing else: GENERATE_RESUME
 - If the user seems confused or wants to restart, guide them back on track`;
 
-const EXTRACT_PROMPT = `You are a data extractor. Given resume text or a conversation, extract all resume data and return ONLY valid JSON with this exact structure:
-{
-  "name": "Full Name",
-  "city": "City, Country",
-  "summary": "2-3 sentence professional summary written in third person",
-  "education": [{"degree": "...", "institution": "...", "year": "..."}],
-  "experience": [{"title": "...", "company": "...", "duration": "...", "responsibilities": "..."}],
-  "skills": ["skill1", "skill2"],
-  "projects": ["project description"],
-  "hobbies": ["hobby1", "hobby2"]
-}
-Generate a compelling professional summary based on the data.
-For any field with no data found, use an empty array [] or empty string "".
-Return ONLY the JSON object. No explanation, no markdown, no code block.`;
+const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text or a conversation, extract the information and return it in this EXACT plain-text format with these EXACT section headers. Do not use JSON. Do not add any explanation.
+
+Name: [full name]
+City: [city, country]
+Summary: [2-3 sentence professional summary in third person]
+
+Education:
+* [Degree], [Institution], [Year]
+
+Experience:
+* [Job Title], [Company], [Duration], [Key responsibilities]
+
+Skills:
+* [Skill]
+
+Projects:
+* [Project description]
+
+Hobbies:
+* [Hobby]
+
+Rules:
+- Use exactly the section headers above
+- Use * bullet points for list sections
+- If a section has no data, omit it entirely
+- Do not add any other text, JSON, or markdown`;
 
 app.post('/whatsapp', async (req, res) => {
   const incomingMsg = (req.body.Body || '').trim();
@@ -221,21 +289,20 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: `Extract resume data from this document:\n\n${text.slice(0, 8000)}` }],
     });
-    resumeData = parseClaudeJson(extraction.content[0].text);
+    resumeData = parseStructuredText(extraction.content[0].text);
   } catch (err) {
     console.error('Resume data extraction error:', err.message);
-    // Fall back: start a normal session so Claude can ask for missing info
+    // Fall back: start a fresh session and ask Claude to collect info manually
     sessions.set(from, { messages: [], resumeData: {} });
-    const fallbackReply = await askClaude(from, 'I uploaded my resume but the data could not be parsed automatically. Please ask me for my details.');
-    return { text: 'I had trouble reading your resume data. Let me ask you a few questions instead.\n\n' + fallbackReply };
+    const fallbackReply = await askClaude(from, 'I uploaded my resume but could not read all the data. Please ask me for my details one section at a time.');
+    return { text: 'I could not fully read your resume. Let me ask you a few quick questions instead.\n\n' + fallbackReply };
   }
 
   // Create session with pre-loaded data
   sessions.set(from, { messages: [], resumeData });
 
   // Feed extracted data into the conversation so Claude can confirm and ask for gaps
-  const dataJson = JSON.stringify(resumeData, null, 2);
-  const contextMessage = `I have uploaded my existing resume. Here is the data extracted from it:\n${dataJson}\n\nPlease confirm what you found and ask me about any missing or unclear fields.`;
+  const contextMessage = `I have uploaded my existing resume. Here is the data extracted from it:\n${JSON.stringify(resumeData, null, 2)}\n\nPlease confirm what you found and ask me about any missing or unclear fields.`;
 
   const claudeReply = await askClaude(from, contextMessage);
 
@@ -286,7 +353,7 @@ async function buildAndSendResume(from, messages, existingData) {
 
     let resumeData = existingData;
     try {
-      const fresh = parseClaudeJson(extraction.content[0].text);
+      const fresh = parseStructuredText(extraction.content[0].text);
       // Fresh conversation data takes precedence; fall back to pre-loaded data
       resumeData = {
         name: fresh.name || existingData.name || '',
@@ -299,7 +366,7 @@ async function buildAndSendResume(from, messages, existingData) {
         hobbies: fresh.hobbies && fresh.hobbies.length ? fresh.hobbies : (existingData.hobbies || []),
       };
     } catch (err) {
-      console.error('Failed to parse final resume JSON:', err.message, '— using existing data');
+      console.error('Failed to parse resume structured text:', err.message, '— using existing data');
     }
 
     const filePath = await generateDocx(resumeData);
