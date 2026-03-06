@@ -450,12 +450,17 @@ async function downloadTwilioMedia(mediaUrl, contentType) {
 
 async function buildAndSendResume(from, messages, existingData) {
   try {
-    // Re-extract from the full conversation, merging with pre-loaded data
+    // Extract final resume data from the conversation using a clean user-only message
     const extraction = await anthropic.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 1024,
       system: EXTRACT_PROMPT,
-      messages,
+      messages: [
+        {
+          role: 'user',
+          content: 'Create a professional resume from the following structured data:\n\n' + JSON.stringify(existingData),
+        },
+      ],
     });
 
     let resumeData = existingData;
