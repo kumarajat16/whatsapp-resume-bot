@@ -164,29 +164,32 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
   }
 
   // Download file from Twilio (requires basic auth)
-  let buffer;
+  let buffer, tmpPath;
   try {
-    buffer = await downloadTwilioMedia(mediaUrl);
+    ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
   } catch (err) {
     console.error('Media download error:', err);
     return { text: 'I could not download your file. Please try again or type 1 to start fresh.' };
   }
 
-  // Extract text from document
+  // Extract text from saved /tmp file
   let text = '';
   try {
     if (contentType === 'application/pdf') {
       const data = await pdfParse(buffer);
       text = data.text;
     } else {
-      const result = await mammoth.extractRawText({ buffer });
+      const result = await mammoth.extractRawText({ path: tmpPath });
       text = result.value;
     }
+    console.log('Text extracted successfully, length:', text.length);
   } catch (err) {
     console.error('Text extraction error:', err);
     return {
       text: 'I could not read your file. It may be corrupted or password-protected. Please try another file or type 1 to start fresh.',
     };
+  } finally {
+    fs.unlink(tmpPath, () => {});
   }
 
   if (!text.trim()) {
@@ -224,21 +227,31 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
   };
 }
 
-async function downloadTwilioMedia(mediaUrl) {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const credentials = Buffer.from(`${sid}:${token}`).toString('base64');
+async function downloadTwilioMedia(mediaUrl, contentType) {
+  console.log('Media type:', contentType);
+  console.log('Downloading from Twilio:', mediaUrl);
+
+  const credentials = Buffer.from(
+    process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
+  ).toString('base64');
 
   const response = await fetch(mediaUrl, {
-    headers: { Authorization: `Basic ${credentials}` },
+    headers: { Authorization: 'Basic ' + credentials },
   });
 
   if (!response.ok) {
-    throw new Error(`Media download failed: ${response.status} ${response.statusText}`);
+    throw new Error('Media download failed: ' + response.status + ' ' + response.statusText);
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  const buffer = Buffer.from(arrayBuffer);
+
+  const ext = contentType === 'application/pdf' ? 'pdf' : 'docx';
+  const tmpPath = path.join(os.tmpdir(), 'upload-' + crypto.randomUUID() + '.' + ext);
+  fs.writeFileSync(tmpPath, buffer);
+  console.log('File downloaded and saved to:', tmpPath);
+
+  return { buffer, tmpPath };
 }
 
 async function buildAndSendResume(from, messages, existingData) {
