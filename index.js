@@ -95,6 +95,10 @@ app.post('/whatsapp', async (req, res) => {
   const mediaUrl = req.body.MediaUrl0 || null;
   const mediaContentType = req.body.MediaContentType0 || '';
 
+  console.log('NumMedia:', req.body.NumMedia);
+  console.log('MediaUrl:', req.body.MediaUrl0);
+  console.log('MediaType:', req.body.MediaContentType0);
+
   let replyText;
   let mediaReplyUrl = null;
 
@@ -184,7 +188,7 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
     }
     console.log('Text extracted successfully, length:', text.length);
   } catch (err) {
-    console.error('Text extraction error:', err);
+    console.error('Text extraction error:', err.message);
     return {
       text: 'I could not read your file. It may be corrupted or password-protected. Please try another file or type 1 to start fresh.',
     };
@@ -231,6 +235,8 @@ async function downloadTwilioMedia(mediaUrl, contentType) {
   console.log('Media type:', contentType);
   console.log('Downloading from Twilio:', mediaUrl);
 
+  console.log('Downloading file from Twilio...');
+
   const credentials = Buffer.from(
     process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
   ).toString('base64');
@@ -249,7 +255,8 @@ async function downloadTwilioMedia(mediaUrl, contentType) {
   const ext = contentType === 'application/pdf' ? 'pdf' : 'docx';
   const tmpPath = path.join(os.tmpdir(), 'upload-' + crypto.randomUUID() + '.' + ext);
   fs.writeFileSync(tmpPath, buffer);
-  console.log('File downloaded and saved to:', tmpPath);
+  console.log('Downloaded file size:', buffer.length);
+  console.log('File saved to:', tmpPath);
 
   return { buffer, tmpPath };
 }
