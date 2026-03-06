@@ -177,12 +177,22 @@ app.post('/whatsapp', async (req, res) => {
   console.log('MediaUrl:', req.body.MediaUrl0);
   console.log('MediaType:', req.body.MediaContentType0);
 
+  // Download media immediately before any other processing — Twilio URLs expire fast
+  let preDownloaded = null;
+  if (numMedia > 0 && mediaUrl) {
+    try {
+      preDownloaded = await downloadTwilioMedia(mediaUrl, mediaContentType);
+    } catch (err) {
+      console.error('Immediate media download failed:', err.message);
+    }
+  }
+
   let replyText;
   let mediaReplyUrl = null;
 
   try {
     const result = numMedia > 0 && mediaUrl
-      ? await handleMediaUpload(from, mediaUrl, mediaContentType)
+      ? await handleMediaUpload(from, mediaContentType, preDownloaded)
       : await handleMessage(from, incomingMsg);
     replyText = result.text;
     mediaReplyUrl = result.mediaUrl || null;
@@ -233,7 +243,7 @@ async function handleMessage(from, incomingMsg) {
   return { text: claudeReply };
 }
 
-async function handleMediaUpload(from, mediaUrl, contentType) {
+async function handleMediaUpload(from, contentType, preDownloaded) {
   const supportedTypes = [
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -245,14 +255,11 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
     };
   }
 
-  // Download file from Twilio (requires basic auth)
-  let buffer, tmpPath;
-  try {
-    ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
-  } catch (err) {
-    console.error('Media download error:', err);
+  if (!preDownloaded) {
     return { text: 'I could not download your file. Please try again or type 1 to start fresh.' };
   }
+
+  const { buffer, tmpPath } = preDownloaded;
 
   // Extract text from saved /tmp file
   let text = '';
@@ -313,29 +320,35 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
 
 async function downloadTwilioMedia(mediaUrl, contentType) {
   console.log('Media type:', contentType);
-  console.log('Downloading from Twilio:', mediaUrl);
-
-  console.log('Downloading file from Twilio...');
+  console.log('Downloading media immediately...');
 
   const credentials = Buffer.from(
     process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
   ).toString('base64');
 
-  const response = await fetch(mediaUrl, {
+  const fetchWithAuth = () => fetch(mediaUrl, {
     headers: { Authorization: 'Basic ' + credentials },
   });
 
+  let response = await fetchWithAuth();
+
+  // Retry once on failure
   if (!response.ok) {
-    throw new Error('Media download failed: ' + response.status + ' ' + response.statusText);
+    console.log('Download failed (' + response.status + '), retrying once...');
+    response = await fetchWithAuth();
+  }
+
+  if (!response.ok) {
+    throw new Error('Media download failed after retry: ' + response.status + ' ' + response.statusText);
   }
 
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
+  console.log('Media downloaded successfully, size:', buffer.length, 'bytes');
 
   const ext = contentType === 'application/pdf' ? 'pdf' : 'docx';
   const tmpPath = path.join(os.tmpdir(), 'upload-' + crypto.randomUUID() + '.' + ext);
   fs.writeFileSync(tmpPath, buffer);
-  console.log('Downloaded file size:', buffer.length);
   console.log('File saved to:', tmpPath);
 
   return { buffer, tmpPath };
