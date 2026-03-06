@@ -24,6 +24,23 @@ app.get('/health', (req, res) => {
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Twilio REST client for outbound messages (used after async processing)
+const twilio = require('twilio');
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+async function sendWhatsApp(to, body, mediaUrl) {
+  const params = {
+    from: process.env.TWILIO_WHATSAPP_FROM,
+    to,
+    body,
+  };
+  if (mediaUrl) params.mediaUrl = [mediaUrl];
+  await twilioClient.messages.create(params);
+}
+
 // Session store: phone -> { messages: [], resumeData: {} }
 const sessions = new Map();
 
@@ -177,23 +194,28 @@ app.post('/whatsapp', async (req, res) => {
   console.log('MediaUrl:', req.body.MediaUrl0);
   console.log('MediaType:', req.body.MediaContentType0);
 
-  // Download media immediately before any other processing — Twilio URLs expire fast
-  let preDownloaded = null;
+  // Media upload — respond immediately then process in background
   if (numMedia > 0 && mediaUrl) {
-    try {
-      preDownloaded = await downloadTwilioMedia(mediaUrl, mediaContentType);
-    } catch (err) {
-      console.error('Immediate media download failed:', err.message);
-    }
+    const twiml = new MessagingResponse();
+    twiml.message('Thanks! I received your resume. Extracting the information now...');
+    res.type('text/xml');
+    res.send(twiml.toString());
+
+    // Fire-and-forget background processing
+    processMediaUpload(from, mediaUrl, mediaContentType).catch((err) => {
+      console.error('Background media processing error:', err);
+      sendWhatsApp(from, 'Sorry, I had trouble processing your file. Please try again or type 1 to start fresh.').catch(console.error);
+    });
+
+    return;
   }
 
+  // Normal text message — handle synchronously
   let replyText;
   let mediaReplyUrl = null;
 
   try {
-    const result = numMedia > 0 && mediaUrl
-      ? await handleMediaUpload(from, mediaContentType, preDownloaded)
-      : await handleMessage(from, incomingMsg);
+    const result = await handleMessage(from, incomingMsg);
     replyText = result.text;
     mediaReplyUrl = result.mediaUrl || null;
   } catch (err) {
@@ -241,6 +263,78 @@ async function handleMessage(from, incomingMsg) {
   }
 
   return { text: claudeReply };
+}
+
+// Background processor — called after TwiML ack is sent to Twilio
+async function processMediaUpload(from, mediaUrl, contentType) {
+  const supportedTypes = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ];
+
+  if (!supportedTypes.includes(contentType)) {
+    await sendWhatsApp(from, 'Sorry, I can only read PDF or Word (.docx) files.\n\nPlease send one of those, or type 1 to create a resume from scratch.');
+    return;
+  }
+
+  // Step 1: Download
+  let buffer, tmpPath;
+  try {
+    ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
+  } catch (err) {
+    console.error('Background download error:', err.message);
+    await sendWhatsApp(from, 'I could not download your file. Please try again or type 1 to start fresh.');
+    return;
+  }
+
+  // Step 2: Extract text
+  let text = '';
+  try {
+    if (contentType === 'application/pdf') {
+      const data = await pdfParse(buffer);
+      text = data.text;
+    } else {
+      const result = await mammoth.extractRawText({ path: tmpPath });
+      text = result.value;
+    }
+    console.log('Extracted text length:', text.length);
+  } catch (err) {
+    console.error('Text extraction error:', err.message);
+    await sendWhatsApp(from, 'I could not read your file. It may be corrupted or password-protected. Please try another file or type 1 to start fresh.');
+    return;
+  } finally {
+    fs.unlink(tmpPath, () => {});
+  }
+
+  if (!text.trim()) {
+    await sendWhatsApp(from, 'Your file appears to be empty or image-based. Please send a text-based PDF or Word file, or type 1 to create a resume from scratch.');
+    return;
+  }
+
+  // Step 3: Claude extracts structured data
+  let resumeData = {};
+  try {
+    const extraction = await anthropic.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 1024,
+      system: EXTRACT_PROMPT,
+      messages: [{ role: 'user', content: 'Extract resume data from this document:\n\n' + text.slice(0, 8000) }],
+    });
+    resumeData = parseStructuredText(extraction.content[0].text);
+  } catch (err) {
+    console.error('Resume data extraction error:', err.message);
+    sessions.set(from, { messages: [], resumeData: {} });
+    const fallbackReply = await askClaude(from, 'I uploaded my resume but could not read all the data. Please ask me for my details one section at a time.');
+    await sendWhatsApp(from, 'I could not fully read your resume. Let me ask you a few quick questions instead.\n\n' + fallbackReply);
+    return;
+  }
+
+  // Step 4: Create session and ask Claude to confirm + fill gaps
+  sessions.set(from, { messages: [], resumeData });
+  const contextMessage = 'I have uploaded my existing resume. Here is the data extracted from it:\n' + JSON.stringify(resumeData, null, 2) + '\n\nPlease confirm what you found and ask me about any missing or unclear fields.';
+  const claudeReply = await askClaude(from, contextMessage);
+
+  await sendWhatsApp(from, 'I found some information in your resume. Let me confirm a few details.\n\n' + claudeReply);
 }
 
 async function handleMediaUpload(from, contentType, preDownloaded) {
