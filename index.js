@@ -1,4 +1,3 @@
-require('dotenv').config();
 const express = require('express');
 const { twiml: { MessagingResponse } } = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk').default;
@@ -6,12 +5,9 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-const {
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  OPENAI_API_KEY,
-  ANTHROPIC_API_KEY,
-} = process.env;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !ANTHROPIC_API_KEY) {
   console.warn('Warning: Missing required environment variables (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ANTHROPIC_API_KEY)');
