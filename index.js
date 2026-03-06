@@ -4,6 +4,7 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
+
 app.get('/health', (req, res) => {
   res.json({
     ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
@@ -12,7 +13,6 @@ app.get('/health', (req, res) => {
     PORT: process.env.PORT,
   });
 });
-
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -122,6 +122,8 @@ async function askClaude(from, userMessage) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Webhook URL: http://localhost:${PORT}/whatsapp`);
+  console.log('Server running on port ' + PORT);
+  console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? 'FOUND' : 'MISSING');
+  console.log('TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? 'FOUND' : 'MISSING');
+  console.log('ANTHROPIC_API_KEY:', process.env.ANTHROPIC_API_KEY ? 'FOUND' : 'MISSING');
 });
