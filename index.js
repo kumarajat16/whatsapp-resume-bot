@@ -186,7 +186,7 @@ async function handleMediaUpload(from, mediaUrl, contentType) {
       const result = await mammoth.extractRawText({ path: tmpPath });
       text = result.value;
     }
-    console.log('Text extracted successfully, length:', text.length);
+    console.log('Extracted text length:', text.length);
   } catch (err) {
     console.error('Text extraction error:', err.message);
     return {
