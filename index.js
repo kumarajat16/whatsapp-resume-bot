@@ -272,22 +272,34 @@ async function handleMessage(from, incomingMsg) {
     return { text: WELCOME_MESSAGE };
   }
 
-  // Generate resume — async (Claude extraction + preview)
+  // Generate resume — async (Claude extraction + DOCX + download link)
   if (lower === 'generate resume' || lower === 'generate') {
-    processGeneratePreview(from, resumeReq.id).catch(err => {
-      console.error('Generate preview error:', err);
-      sendWhatsApp(from, 'Sorry, there was an error building your preview. Please try again.').catch(console.error);
+    processGenerateResume(from, resumeReq.id).catch(err => {
+      console.error('Generate resume error:', err);
+      sendWhatsApp(from, 'Sorry, there was an error generating your resume. Please try again.').catch(console.error);
     });
-    return { text: 'Building your resume preview...' };
+    return { text: 'Generating your resume...' };
   }
 
-  // Download — async (DOCX generation)
-  if (lower === 'download') {
-    processDownload(from, resumeReq.id).catch(err => {
-      console.error('Download error:', err);
-      sendWhatsApp(from, 'Sorry, there was an error generating your resume document.').catch(console.error);
-    });
-    return { text: 'Generating your resume document...' };
+  // "1" with existing data → edit resume
+  if (lower === '1') {
+    const data = await db.getResumeData(resumeReq.id);
+    if (Object.keys(data).length > 0) {
+      const reply = await askClaude(resumeReq.id,
+        'I want to edit my resume. Here is my current data:\n' + JSON.stringify(data, null, 2) + '\n\nPlease ask me which section I want to modify.');
+      return { text: reply };
+    }
+  }
+
+  // "2" with existing data → create another resume
+  if (lower === '2') {
+    const data = await db.getResumeData(resumeReq.id);
+    if (Object.keys(data).length > 0) {
+      await db.updateResumeRequestStatus(resumeReq.id, 'completed');
+      resumeReq = await db.createResumeRequest(user.id);
+      const reply = await askClaude(resumeReq.id, 'Hi, I want to create a new resume. Please get started.');
+      return { text: reply };
+    }
   }
 
   // Edit resume
@@ -305,11 +317,11 @@ async function handleMessage(from, incomingMsg) {
   const claudeReply = await askClaude(resumeReq.id, incomingMsg);
 
   if (claudeReply.trim() === 'GENERATE_RESUME') {
-    processGeneratePreview(from, resumeReq.id).catch(err => {
-      console.error('Generate preview error:', err);
-      sendWhatsApp(from, 'Sorry, there was an error building your preview. Please try again.').catch(console.error);
+    processGenerateResume(from, resumeReq.id).catch(err => {
+      console.error('Generate resume error:', err);
+      sendWhatsApp(from, 'Sorry, there was an error generating your resume. Please try again.').catch(console.error);
     });
-    return { text: 'Building your resume preview...' };
+    return { text: 'Generating your resume...' };
   }
 
   return { text: claudeReply };
@@ -317,82 +329,29 @@ async function handleMessage(from, incomingMsg) {
 
 // ─── Async processors ────────────────────────────────────────────────────────
 
-async function processGeneratePreview(from, resumeRequestId) {
+async function processGenerateResume(from, resumeRequestId) {
   await extractAndSaveFromConversation(resumeRequestId);
   const data = await db.getResumeData(resumeRequestId);
 
-  let preview = 'Your resume is ready. Here is a preview:\n\n';
-
-  if (data.name) preview += 'Name: ' + data.name + '\n';
-  if (data.location) preview += 'Location: ' + data.location + '\n';
-  preview += '\n';
-
-  if (data.summary) preview += 'Summary:\n' + data.summary + '\n\n';
-
-  if (data.experience && data.experience.length > 0) {
-    preview += 'Experience:\n';
-    for (const exp of data.experience) {
-      if (typeof exp === 'object') {
-        preview += [exp.title, exp.company, exp.duration].filter(Boolean).join(' - ') + '\n';
-      } else {
-        preview += exp + '\n';
-      }
-    }
-    preview += '\n';
-  }
-
-  if (data.education && data.education.length > 0) {
-    preview += 'Education:\n';
-    for (const edu of data.education) {
-      if (typeof edu === 'object') {
-        preview += [edu.degree, edu.institution, edu.year].filter(Boolean).join(', ') + '\n';
-      } else {
-        preview += edu + '\n';
-      }
-    }
-    preview += '\n';
-  }
-
-  if (data.skills && data.skills.length > 0) {
-    preview += 'Skills:\n' + data.skills.join(', ') + '\n\n';
-  }
-
-  if (data.projects && data.projects.length > 0) {
-    preview += 'Projects:\n' + data.projects.join(', ') + '\n\n';
-  }
-
-  if (data.certifications && data.certifications.length > 0) {
-    preview += 'Certifications:\n' + data.certifications.join(', ') + '\n\n';
-  }
-
-  if (data.achievements && data.achievements.length > 0) {
-    preview += 'Achievements:\n' + data.achievements.join(', ') + '\n\n';
-  }
-
-  if (data.tools && data.tools.length > 0) {
-    preview += 'Tools:\n' + data.tools.join(', ') + '\n\n';
-  }
-
-  preview += 'Reply:\nDOWNLOAD - receive your resume as a Word document\nEDIT - modify your resume';
-
-  await sendWhatsApp(from, preview);
-}
-
-async function processDownload(from, resumeRequestId) {
-  const data = await db.getResumeData(resumeRequestId);
-
   if (Object.keys(data).length === 0) {
-    await sendWhatsApp(from, 'No resume data found. Please create a resume first by typing 1.');
+    await sendWhatsApp(from, 'No resume data found. Please provide your details first or upload a resume.');
     return;
   }
 
   const filePath = await generateDocx(data);
   const token = storeTempFile(filePath);
   const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
-  const fileUrl = `${baseUrl}/resume/${token}`;
+  const downloadUrl = `${baseUrl}/resume/${token}`;
 
-  await db.updateResumeRequestStatus(resumeRequestId, 'completed');
-  await sendWhatsApp(from, 'Here is your resume!\n\nType restart to create a new one.', fileUrl);
+  const msg =
+    'Your resume is ready!\n\n' +
+    'Download here:\n' +
+    downloadUrl + '\n\n' +
+    'Reply:\n' +
+    '1 - Edit resume\n' +
+    '2 - Create another resume';
+
+  await sendWhatsApp(from, msg);
 }
 
 async function processMediaUpload(from, mediaUrl, contentType) {
