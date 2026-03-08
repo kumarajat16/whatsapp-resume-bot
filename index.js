@@ -70,124 +70,211 @@ function sendTwiml(res, text) {
 // ─── Progress messages (no AI cost) ──────────────────────────────────────────
 
 const PROGRESS_MESSAGES = [
-  'Analyzing your information...',
+  'Analyzing your profile...',
+  'Identifying your strengths and key achievements...',
   'Building your professional summary...',
   'Formatting your resume...',
-  'Almost done, adding final touches...',
 ];
 
 async function sendProgressMessages(to, count) {
   for (let i = 0; i < Math.min(count, PROGRESS_MESSAGES.length); i++) {
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 2500));
     await sendWhatsApp(to, PROGRESS_MESSAGES[i]);
   }
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are ResumeWala, a WhatsApp resume-building assistant for Indian job seekers. You help users create professional resumes quickly.
+const SYSTEM_PROMPT = `You are ResumeWala, a WhatsApp resume-building assistant for Indian job seekers. You help users create professional, recruiter-ready resumes.
 
-Your job: collect resume information through natural conversation. Ask 1-2 questions at a time.
+Your job: collect resume information through natural conversation.
 
-Collect these details:
+Information to collect:
 1. Full name
 2. Phone / Email (optional)
 3. Location (city)
-4. Professional summary (you can help write this)
-5. Education (degree, college, year)
-6. Work experience (title, company, duration, responsibilities) - may have multiple
-7. Skills (technical and soft)
-8. Projects (optional)
-9. Certifications (optional)
-10. Achievements (optional)
+4. Target job role (what jobs they are applying for)
+5. Professional summary (you will help write this)
+6. Education (degree, college, year)
+7. Work experience (title, company, duration, key responsibilities with measurable impact)
+8. Skills (technical and soft)
+9. Projects (optional)
+10. Leadership roles (optional)
+11. Certifications (optional)
+12. Achievements (optional)
 
 Rules:
-- Be warm, encouraging, and concise. Messages must be SHORT and mobile-friendly.
-- Use plain text only. No markdown (no **, ##, bullet dashes). Use line breaks for formatting.
-- Ask 1-2 questions per message. Do not overwhelm.
-- If user gives short answers, gently ask for more detail.
-- If conversation starts with pre-loaded resume data, confirm what you found and only ask about missing/unclear fields. Do NOT re-ask everything.
+- Be warm, encouraging, and concise. Messages must be SHORT and WhatsApp-friendly.
+- Use plain text only. No markdown headers. You may use *asterisks* for bold on WhatsApp.
+- Ask MAXIMUM 2 questions per message. If a question needs options, ask only 1 question.
+- NEVER re-ask for information the user already provided. Before asking, mentally check what you already know.
+- For experience bullets, coach users to include ACTION + IMPACT + METRIC. Example: "Led a team of 5 to build payment gateway, reducing checkout drop-offs by 30%"
+- If user gives vague responsibilities like "handled operations", ask: "Can you share a specific achievement or number from that role? For example, team size, revenue impact, or a project you led?"
 - You MUST stay on topic. If the user tries to chat about non-resume topics, politely redirect: "Let's focus on your resume! [next question]"
 - Do NOT answer general knowledge questions, jokes, or off-topic requests.
 - Once you have the core info (name, education, experience, skills), say:
-  "I have your details ready! Reply YES to generate your resume."
+  "I have everything I need! Reply *YES* to generate your resume."
 - When user says YES/yes/y, respond with exactly: GENERATE_RESUME
 - Do not add any other text when responding with GENERATE_RESUME`;
 
-const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text or a conversation, extract information in this EXACT plain-text format. Do not use JSON. Do not add explanation.
+const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text, extract ALL information thoroughly. Return in this EXACT plain-text format. Do not use JSON. Do not add explanation.
 
 Name: [full name]
+Headline: [professional headline like "Product Manager | Growth & Analytics" - generate from their role/skills]
 Email: [email if found]
 Phone: [phone if found]
 Location: [city]
-Summary: [2-3 sentence professional summary]
+Summary: [write a strong 2-3 sentence professional summary in third person, highlighting years of experience, domain expertise, and key achievements]
 
 Education:
 * [Degree], [Institution], [Year]
 
 Experience:
-* [Job Title], [Company], [Duration], [Key responsibilities]
+## [Job Title] | [Company] | [Duration]
+> [One line company/role context if inferrable]
+* [Action verb] + [what was done] + [impact/result with metric if available]
+* [Action verb] + [what was done] + [impact/result with metric if available]
 
 Skills:
 * [Skill]
 
 Projects:
-* [Project description]
+* [Project name or description with impact]
+
+Leadership:
+* [Leadership role or responsibility]
 
 Certifications:
 * [Certification]
 
 Achievements:
-* [Achievement]
+* [Achievement with metric if available]
 
 Tools:
 * [Tool or technology]
 
 Rules:
-- Use exactly these section headers
-- Use * for list items
+- Use EXACTLY these section headers
+- For Experience, use ## for each role header (Job Title | Company | Duration)
+- Use > for optional company/role description under each role
+- Use * for bullet points under each role
+- Every bullet MUST start with a strong action verb (Led, Built, Developed, Optimized, Launched, Revamped, Managed, Created, Implemented, Drove, Spearheaded)
+- Include metrics and numbers wherever found in the original text
+- If the resume mentions leadership activities, volunteer work, or organizational roles, put them under Leadership
 - Omit empty sections entirely
-- No JSON, no markdown`;
+- Do NOT truncate or summarize - extract EVERYTHING from the resume
+- No JSON, no markdown headers`;
+
+const AI_UNDERSTANDING_PROMPT = `You are ResumeWala. Given parsed resume data, generate a warm personalized message showing you deeply understand this person's profile.
+
+Rules:
+- Address them by first name
+- Highlight their strongest experience area with specific details
+- Mention specific achievements or metrics from their resume
+- Reference their education
+- Note their key skills that make them stand out
+- End with: "To make your resume even stronger, I just need a few more details."
+- Use *asterisks* for WhatsApp bold on: company names, role titles, key metrics, institution names
+- Keep it 4-6 sentences, warm and professional
+- Do NOT use markdown headers (##) or bullet points
+- Do NOT list out all their information - synthesize it into a natural narrative
+- Write as if you're an experienced career advisor who is impressed by their profile`;
 
 // ─── Welcome / Menu ──────────────────────────────────────────────────────────
 
 const WELCOME_MSG =
   'Welcome to ResumeWala!\nBuild a professional resume in minutes.\n\nReply:\n1 - Improve existing resume (upload PDF/Word)\n2 - Create fresh resume\n\nType "menu" anytime to see this again.';
 
-// ─── Structured text parser ──────────────────────────────────────────────────
+// ─── Structured text parser (enhanced) ───────────────────────────────────────
 
 function parseStructuredText(raw) {
   const result = {
-    name: '', email: '', phone: '', location: '', summary: '',
+    name: '', headline: '', email: '', phone: '', location: '',
+    summary: '', target_role: '',
     education: [], experience: [], skills: [],
-    projects: [], certifications: [], achievements: [], tools: [], hobbies: [],
+    projects: [], leadership: [], certifications: [],
+    achievements: [], tools: [], hobbies: [],
   };
 
   const lines = raw.split('\n');
   let currentSection = null;
+  let currentExpEntry = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    const inlineMatch = trimmed.match(/^(Name|Email|Phone|Location|City|Summary):\s*(.+)$/i);
+    // Inline fields: Name: ..., Email: ..., etc.
+    const inlineMatch = trimmed.match(/^(Name|Headline|Email|Phone|Location|City|Summary|Target Role):\s*(.+)$/i);
     if (inlineMatch) {
-      let key = inlineMatch[1].toLowerCase();
+      let key = inlineMatch[1].toLowerCase().replace(/\s+/g, '_');
       if (key === 'city') key = 'location';
       result[key] = inlineMatch[2].trim();
       currentSection = key;
+      currentExpEntry = null;
       continue;
     }
 
-    const sectionMatch = trimmed.match(/^(Education|Experience|Skills|Projects|Certifications|Achievements|Tools|Hobbies):\s*$/i);
+    // Section headers
+    const sectionMatch = trimmed.match(/^(Education|Experience|Skills|Projects|Leadership|Certifications|Achievements|Tools|Hobbies):\s*$/i);
     if (sectionMatch) {
       currentSection = sectionMatch[1].toLowerCase();
+      currentExpEntry = null;
       continue;
     }
 
+    // Experience/Leadership role header: ## Title | Company | Duration
+    if ((currentSection === 'experience' || currentSection === 'leadership') && trimmed.startsWith('##')) {
+      const headerText = trimmed.replace(/^#+\s*/, '');
+      const parts = headerText.split('|').map(s => s.trim());
+
+      const entry = {
+        title: parts[0] || '',
+        company: parts[1] || '',
+        duration: parts[2] || '',
+        description: '',
+        responsibilities: [],
+      };
+
+      if (currentSection === 'experience') {
+        result.experience.push(entry);
+        currentExpEntry = entry;
+      } else {
+        result.leadership.push(entry);
+        currentExpEntry = entry;
+      }
+      continue;
+    }
+
+    // Company/role description: > text
+    if (currentExpEntry && trimmed.startsWith('>')) {
+      currentExpEntry.description = trimmed.replace(/^>\s*/, '').trim();
+      continue;
+    }
+
+    // Bullet items
     if (currentSection && /^[*\-\u2022]/.test(trimmed)) {
       const val = trimmed.replace(/^[*\-\u2022]\s*/, '').trim();
       if (!val) continue;
+
+      // If we're in experience/leadership and have a current entry, add as responsibility
+      if ((currentSection === 'experience' || currentSection === 'leadership') && currentExpEntry) {
+        currentExpEntry.responsibilities.push(val);
+        continue;
+      }
+
+      // If in experience but no ## header yet, create an entry from the bullet
+      if (currentSection === 'experience' && !currentExpEntry) {
+        const parts = val.split(',').map(s => s.trim());
+        result.experience.push({
+          title: parts[0] || val,
+          company: parts[1] || '',
+          duration: parts[2] || '',
+          description: '',
+          responsibilities: parts.length > 3 ? [parts.slice(3).join(', ')] : [],
+        });
+        continue;
+      }
 
       if (currentSection === 'education') {
         const parts = val.split(',').map(s => s.trim());
@@ -196,14 +283,8 @@ function parseStructuredText(raw) {
           institution: parts[1] || '',
           year: parts[2] || '',
         });
-      } else if (currentSection === 'experience') {
-        const parts = val.split(',').map(s => s.trim());
-        result.experience.push({
-          title: parts[0] || val,
-          company: parts[1] || '',
-          duration: parts[2] || '',
-          responsibilities: parts.slice(3).join(', '),
-        });
+      } else if (currentSection === 'leadership' && !currentExpEntry) {
+        result.leadership.push(val);
       } else if (Array.isArray(result[currentSection])) {
         result[currentSection].push(val);
       }
@@ -213,47 +294,107 @@ function parseStructuredText(raw) {
   return result;
 }
 
-// ─── Resume data summary (for preview / confirmation) ────────────────────────
+// ─── Missing field detection ─────────────────────────────────────────────────
 
-function buildResumeSummary(data, redacted) {
-  const lines = [];
-  if (data.name) lines.push('Name: ' + data.name);
-  if (data.location) lines.push('Location: ' + data.location);
+function detectMissingFields(data) {
+  const missing = [];
 
+  if (!data.target_role) missing.push('target_role');
+  if (!data.summary || data.summary.length < 20) missing.push('summary');
+  if (!data.experience || data.experience.length === 0) missing.push('experience');
+  if (!data.education || data.education.length === 0) missing.push('education');
+  if (!data.skills || data.skills.length === 0) missing.push('skills');
+  if (!data.certifications || data.certifications.length === 0) missing.push('certifications');
+  if (!data.achievements || data.achievements.length === 0) missing.push('achievements');
+  if (!data.projects || data.projects.length === 0) missing.push('projects');
+
+  // Check if experience bullets are weak (no metrics)
   if (data.experience && data.experience.length > 0) {
-    lines.push('\nExperience:');
+    let hasMetrics = false;
     for (const exp of data.experience) {
-      if (typeof exp === 'object') {
-        const parts = [exp.title, exp.company, exp.duration].filter(Boolean);
-        lines.push('- ' + parts.join(' | '));
-      } else {
-        lines.push('- ' + exp);
+      const resps = exp.responsibilities || [];
+      for (const r of resps) {
+        if (/\d+%|\d+x|\d+X|\d{2,}/.test(r)) {
+          hasMetrics = true;
+          break;
+        }
       }
+      if (hasMetrics) break;
     }
+    if (!hasMetrics) missing.push('experience_metrics');
   }
 
-  if (data.education && data.education.length > 0) {
-    lines.push('\nEducation:');
-    for (const edu of data.education) {
-      if (typeof edu === 'object') {
-        lines.push('- ' + [edu.degree, edu.institution, edu.year].filter(Boolean).join(' | '));
-      } else {
-        lines.push('- ' + edu);
-      }
-    }
+  return missing;
+}
+
+function formatMissingFieldQuestions(missing) {
+  const questions = [];
+
+  if (missing.includes('target_role')) {
+    questions.push(
+      'What type of jobs are you targeting?\n\n' +
+      '1. Product Management\n' +
+      '2. Software Engineering\n' +
+      '3. Data / Analytics\n' +
+      '4. Marketing\n' +
+      '5. Operations\n' +
+      '6. Other (please specify)'
+    );
   }
 
-  if (data.skills && data.skills.length > 0) {
-    const shown = data.skills.slice(0, 5);
-    const more = data.skills.length > 5 ? ` +${data.skills.length - 5} more` : '';
-    lines.push('\nSkills: ' + shown.join(', ') + more);
+  if (missing.includes('experience_metrics')) {
+    questions.push(
+      'Your experience looks great! To make it stand out, can you share any specific numbers or achievements?\n\n' +
+      'For example:\n' +
+      '- Team size you managed\n' +
+      '- Revenue or growth impact\n' +
+      '- Users/customers affected\n' +
+      '- Percentage improvements'
+    );
   }
 
-  if (redacted) {
-    lines.push('\n--- Full details available after download ---');
+  if (missing.includes('certifications')) {
+    questions.push('Do you have any certifications? (e.g., AWS, PMP, Google Analytics, etc.) Reply "none" if not.');
   }
 
-  return lines.join('\n');
+  if (missing.includes('achievements')) {
+    questions.push('Any key achievements or awards you want to highlight? (e.g., hackathon wins, top performer awards, publications)');
+  }
+
+  if (missing.includes('projects') && !missing.includes('experience')) {
+    questions.push('Any notable projects you want to showcase on your resume?');
+  }
+
+  return questions;
+}
+
+// ─── AI Understanding message generator ──────────────────────────────────────
+
+async function generateAIUnderstanding(data) {
+  const dataStr =
+    'Name: ' + (data.name || '') + '\n' +
+    'Location: ' + (data.location || '') + '\n' +
+    'Education: ' + JSON.stringify(data.education || []) + '\n' +
+    'Experience: ' + JSON.stringify(data.experience || []) + '\n' +
+    'Skills: ' + JSON.stringify(data.skills || []) + '\n' +
+    'Projects: ' + JSON.stringify(data.projects || []) + '\n' +
+    'Achievements: ' + JSON.stringify(data.achievements || []) + '\n' +
+    'Leadership: ' + JSON.stringify(data.leadership || []);
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 500,
+      system: AI_UNDERSTANDING_PROMPT,
+      messages: [{ role: 'user', content: 'Generate an understanding message for this profile:\n\n' + dataStr }],
+    });
+    return response.content[0].text;
+  } catch (err) {
+    console.error('AI understanding generation failed:', err.message);
+    // Fallback to a simple summary
+    const firstName = (data.name || '').split(' ')[0] || 'there';
+    return `Hi ${firstName}, I've gone through your resume carefully. You have a solid profile! To make your resume even stronger, I just need a few more details.`;
+  }
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
@@ -289,7 +430,6 @@ if (RAZORPAY_ENABLED) {
         const phone = notes.phone;
         if (resumeRequestId && phone) {
           await db.updateResumeRequestStatus(resumeRequestId, 'paid');
-          // Generate and send the full resume
           processFullResume(phone, resumeRequestId).catch(err => {
             console.error('Post-payment resume generation error:', err);
           });
@@ -351,15 +491,16 @@ async function handleMessage(from, user, incomingMsg) {
   const lower = incomingMsg.toLowerCase().trim();
 
   // Menu / restart
-  if (lower === 'menu' || lower === 'restart' || lower === '0' || lower === 'hi' || lower === 'hello') {
+  if (lower === 'menu' || lower === 'restart' || lower === '0') {
     const active = await db.getActiveResumeRequest(user.id);
-    if (active && lower !== 'hi' && lower !== 'hello') {
-      await db.updateResumeRequestStatus(active.id, 'abandoned');
-    }
-    if (active && (lower === 'hi' || lower === 'hello')) {
-      // If they have an active session, continue it
-      return await handleActiveSession(from, user, active, incomingMsg);
-    }
+    if (active) await db.updateResumeRequestStatus(active.id, 'abandoned');
+    return WELCOME_MSG;
+  }
+
+  // Greetings — continue active or show menu
+  if (lower === 'hi' || lower === 'hello') {
+    const active = await db.getActiveResumeRequest(user.id);
+    if (active) return await handleActiveSession(from, user, active, incomingMsg);
     return WELCOME_MSG;
   }
 
@@ -391,7 +532,6 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     if (resumeReq.flow === 'improve') {
       return 'Please send your resume file (PDF or Word). Or type "2" to create from scratch instead.';
     }
-    // Create flow — start conversation
     await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
     const reply = await askClaude(resumeReq.id, incomingMsg);
     return reply;
@@ -399,19 +539,17 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
 
   // ─── collecting_data: conversation with Claude
   if (status === 'collecting_data') {
-    // Generate command
     if (lower === 'generate resume' || lower === 'generate' || lower === 'gen') {
       return await startResumeGeneration(from, user, resumeReq);
     }
 
-    // Edit command
     if (lower === 'edit resume' || lower === 'edit') {
       const data = await db.getResumeData(resumeReq.id);
       if (!data || !data.name) {
         return 'No resume data yet. Let me ask you some questions first!\n\nWhat is your full name?';
       }
       const reply = await askClaude(resumeReq.id,
-        'I want to edit my resume. Current data:\n' + buildResumeSummary(data, false) + '\n\nAsk me what I want to change.');
+        'I want to edit my resume. Ask me what section I want to change.');
       return reply;
     }
 
@@ -431,14 +569,12 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
       if (RAZORPAY_ENABLED) {
         return await createPaymentLink(from, resumeReq);
       }
-      // No payment required — generate and send
       return await startFullResumeGeneration(from, user, resumeReq);
     }
     if (lower === '2' || lower === 'edit') {
       await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
-      const data = await db.getResumeData(resumeReq.id);
       const reply = await askClaude(resumeReq.id,
-        'I want to edit my resume before downloading. Current data:\n' + buildResumeSummary(data, false) + '\n\nAsk me what I want to change.');
+        'I want to edit my resume before downloading. Ask me what I want to change.');
       return reply;
     }
     if (lower === '3' || lower === 'new' || lower === 'restart') {
@@ -448,24 +584,22 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     return 'Reply:\n1 - Download resume\n2 - Edit something\n3 - Start over';
   }
 
-  // ─── generating: resume is being generated
+  // ─── generating
   if (status === 'generating') {
     return 'Your resume is being generated. Please wait a moment...';
   }
 
-  // ─── completed: resume already delivered
+  // ─── completed
   if (status === 'completed') {
     return WELCOME_MSG;
   }
 
-  // Fallback
   return WELCOME_MSG;
 }
 
 // ─── Resume generation triggers ──────────────────────────────────────────────
 
 async function startResumeGeneration(from, user, resumeReq) {
-  // Check resume daily limit
   const limits = await db.getUserLimits(user.id);
   if (limits.daily_resumes >= DAILY_RESUME_LIMIT) {
     return 'You have used all ' + DAILY_RESUME_LIMIT + ' resume generations for today. Try again tomorrow!';
@@ -474,7 +608,6 @@ async function startResumeGeneration(from, user, resumeReq) {
   await db.updateResumeRequestStatus(resumeReq.id, 'generating');
   await db.incrementResumeCount(user.id);
 
-  // Fire and forget
   processResumePreview(from, resumeReq.id).catch(err => {
     console.error('Resume generation error:', err);
     db.updateResumeRequestStatus(resumeReq.id, 'collecting_data').catch(console.error);
@@ -499,10 +632,8 @@ async function startFullResumeGeneration(from, user, resumeReq) {
 // ─── Async processors ────────────────────────────────────────────────────────
 
 async function processResumePreview(from, resumeRequestId) {
-  // Send progress messages
-  sendProgressMessages(from, 2).catch(console.error);
+  sendProgressMessages(from, 3).catch(console.error);
 
-  // Extract data from conversation
   await extractAndSaveFromConversation(resumeRequestId);
   const data = await db.getResumeData(resumeRequestId);
 
@@ -512,13 +643,14 @@ async function processResumePreview(from, resumeRequestId) {
     return;
   }
 
-  // Show preview (redacted)
   await db.updateResumeRequestStatus(resumeRequestId, 'preview_ready');
 
-  const preview = buildResumeSummary(data, true);
+  // Generate AI understanding for preview
+  const understanding = await generateAIUnderstanding(data);
+
   const msg =
-    'Here\'s a preview of your resume:\n\n' +
-    preview + '\n\n' +
+    understanding + '\n\n' +
+    'Your resume is ready for download!\n\n' +
     'Reply:\n' +
     '1 - Download full resume\n' +
     '2 - Edit something\n' +
@@ -571,7 +703,7 @@ async function processMediaUpload(from, userId, mediaUrl, contentType) {
     await db.updateResumeRequestFlow(resumeReq.id, 'improve');
   }
 
-  // Download file
+  // Step 1: Download file
   let buffer, tmpPath;
   try {
     ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
@@ -581,7 +713,7 @@ async function processMediaUpload(from, userId, mediaUrl, contentType) {
     return;
   }
 
-  // Extract text
+  // Step 2: Extract text
   let text = '';
   try {
     if (contentType === 'application/pdf') {
@@ -606,15 +738,16 @@ async function processMediaUpload(from, userId, mediaUrl, contentType) {
 
   await sendWhatsApp(from, 'Reading your resume...');
 
-  // Claude extracts structured data
+  // Step 3: Claude extracts structured data (complete extraction)
   let resumeData = {};
   try {
     const extraction = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 2000,
+      max_tokens: 3000,
       system: EXTRACT_PROMPT,
-      messages: [{ role: 'user', content: 'Extract resume data:\n\n' + text.slice(0, 8000) }],
+      messages: [{ role: 'user', content: 'Extract ALL resume data from this document. Do not miss any information:\n\n' + text.slice(0, 12000) }],
     });
+    console.log('Extraction raw:', extraction.content[0].text.slice(0, 200));
     resumeData = parseStructuredText(extraction.content[0].text);
   } catch (err) {
     console.error('Extraction error:', err.message);
@@ -622,18 +755,41 @@ async function processMediaUpload(from, userId, mediaUrl, contentType) {
     return;
   }
 
-  // Save
+  // Step 4: Save to database
   await db.saveResumeData(resumeReq.id, resumeData);
   await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
 
-  // Build summary and start conversation
-  const summary = buildResumeSummary(resumeData, false);
+  // Step 5: Generate AI understanding message (Message 1)
+  const understanding = await generateAIUnderstanding(resumeData);
+  await sendWhatsApp(from, understanding);
 
-  const contextMsg = 'I uploaded my resume. Here is what was extracted:\n' +
-    summary + '\n\nConfirm what you found and ask about any missing fields.';
-  const claudeReply = await askClaude(resumeReq.id, contextMsg);
+  // Step 6: Detect missing fields and send questions (Message 2 - separate)
+  const missing = detectMissingFields(resumeData);
+  const questions = formatMissingFieldQuestions(missing);
 
-  await sendWhatsApp(from, 'Here\'s what I found:\n\n' + summary + '\n\n' + claudeReply);
+  if (questions.length > 0) {
+    // Send max 2 questions at a time
+    const batch = questions.slice(0, 2);
+    const questionMsg = 'I just need a few more details.\n\n' + batch.join('\n\n');
+    await sendWhatsApp(from, questionMsg);
+
+    // Seed the conversation context so Claude knows what was extracted and what was asked
+    const contextMsg = 'User uploaded resume. Extracted data:\n' +
+      'Name: ' + (resumeData.name || '') + '\n' +
+      'Experience: ' + (resumeData.experience || []).map(e => typeof e === 'object' ? (e.title + ' at ' + e.company) : e).join(', ') + '\n' +
+      'Education: ' + (resumeData.education || []).map(e => typeof e === 'object' ? (e.degree + ' from ' + e.institution) : e).join(', ') + '\n' +
+      'Skills: ' + (resumeData.skills || []).join(', ') + '\n' +
+      'Missing fields: ' + missing.join(', ') + '\n' +
+      'I already asked about: ' + batch.map(q => q.split('\n')[0]).join('; ');
+    await db.addMessage(resumeReq.id, 'incoming', contextMsg);
+    await db.addMessage(resumeReq.id, 'outgoing', understanding + '\n\n' + questionMsg);
+  } else {
+    // No missing fields — ready to generate
+    const readyMsg = 'Your resume data looks complete! Reply *YES* to generate your resume, or tell me if you want to change anything.';
+    await sendWhatsApp(from, readyMsg);
+    await db.addMessage(resumeReq.id, 'incoming', 'User uploaded resume with complete data.');
+    await db.addMessage(resumeReq.id, 'outgoing', understanding + '\n\n' + readyMsg);
+  }
 }
 
 // ─── Extract from conversation ───────────────────────────────────────────────
@@ -649,22 +805,28 @@ async function extractAndSaveFromConversation(resumeRequestId) {
   if (existingData && existingData.name) {
     prompt += 'Previously extracted resume data:\n';
     prompt += 'Name: ' + (existingData.name || '') + '\n';
+    prompt += 'Headline: ' + (existingData.headline || '') + '\n';
     prompt += 'Location: ' + (existingData.location || '') + '\n';
     prompt += 'Email: ' + (existingData.email || '') + '\n';
     prompt += 'Phone: ' + (existingData.phone || '') + '\n';
+    prompt += 'Target Role: ' + (existingData.target_role || '') + '\n';
     if (existingData.summary) prompt += 'Summary: ' + existingData.summary + '\n';
     if (existingData.experience?.length) prompt += 'Experience: ' + JSON.stringify(existingData.experience) + '\n';
     if (existingData.education?.length) prompt += 'Education: ' + JSON.stringify(existingData.education) + '\n';
     if (existingData.skills?.length) prompt += 'Skills: ' + existingData.skills.join(', ') + '\n';
+    if (existingData.leadership?.length) prompt += 'Leadership: ' + JSON.stringify(existingData.leadership) + '\n';
+    if (existingData.projects?.length) prompt += 'Projects: ' + JSON.stringify(existingData.projects) + '\n';
+    if (existingData.certifications?.length) prompt += 'Certifications: ' + existingData.certifications.join(', ') + '\n';
+    if (existingData.achievements?.length) prompt += 'Achievements: ' + existingData.achievements.join(', ') + '\n';
     prompt += '\n';
   }
-  prompt += 'Conversation:\n\n' + convText.slice(0, 8000);
-  prompt += '\n\nExtract the complete resume data, merging all sources. Preserve existing data and add/update from conversation.';
+  prompt += 'Conversation with additional information:\n\n' + convText.slice(0, 10000);
+  prompt += '\n\nExtract the COMPLETE resume data, merging all sources. Preserve all existing data and add/update from the conversation. Do not lose any information.';
 
   try {
     const extraction = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 2000,
+      max_tokens: 3000,
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: prompt }],
     });
@@ -729,7 +891,7 @@ async function createPaymentLink(from, resumeReq) {
 
   try {
     const link = await razorpay.paymentLink.create({
-      amount: 7900, // Rs 79 in paise
+      amount: 7900,
       currency: 'INR',
       description: 'ResumeWala - Professional Resume Download',
       notes: {
@@ -750,162 +912,258 @@ async function createPaymentLink(from, resumeReq) {
   }
 }
 
-// ─── DOCX generation ─────────────────────────────────────────────────────────
+// ─── DOCX generation (professional ATS-compatible template) ──────────────────
 
 async function generateDocx(data) {
-  const heading = (title) =>
-    new Paragraph({
-      children: [new TextRun({ text: title, bold: true, size: 26, color: '2E4057' })],
-      border: {
-        bottom: { color: '2E4057', space: 4, style: BorderStyle.SINGLE, size: 6 },
-      },
-      spacing: { before: 320, after: 140 },
-    });
-
   const children = [];
 
-  // Name
+  // ── Section heading with bottom border
+  const sectionHeading = (title) =>
+    new Paragraph({
+      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 24, font: 'Calibri', color: '1F3864' })],
+      border: {
+        bottom: { color: '1F3864', space: 4, style: BorderStyle.SINGLE, size: 8 },
+      },
+      spacing: { before: 360, after: 160 },
+    });
+
+  // ── Bullet paragraph
+  const bulletParagraph = (text) => {
+    // Bold metrics (numbers with % or x)
+    const parts = text.split(/(\d+[\d,.]*[%xX]?|\d{2,}[+]?)/g);
+    const runs = [];
+    for (const part of parts) {
+      if (/^\d+[\d,.]*[%xX]?$|^\d{2,}[+]?$/.test(part)) {
+        runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
+      } else {
+        runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
+      }
+    }
+    return new Paragraph({
+      children: [new TextRun({ text: '\u2022  ', size: 21, font: 'Calibri' }), ...runs],
+      spacing: { after: 60 },
+      indent: { left: 360 },
+    });
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // NAME
+  // ═══════════════════════════════════════════════════════════════
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: data.name || 'Resume', bold: true, size: 48, color: '2E4057' })],
+      children: [new TextRun({ text: (data.name || 'Resume').toUpperCase(), bold: true, size: 48, font: 'Calibri', color: '1F3864' })],
       alignment: AlignmentType.CENTER,
-      spacing: { after: 80 },
+      spacing: { after: 40 },
     })
   );
 
-  // Contact line
+  // ── Headline (e.g., "Product Manager | Growth & Analytics")
+  if (data.headline) {
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: data.headline, size: 24, font: 'Calibri', color: '404040', italics: true })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 60 },
+      })
+    );
+  }
+
+  // ── Contact line
   const contactParts = [data.location, data.email, data.phone].filter(Boolean);
   if (contactParts.length > 0) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: contactParts.join('  |  '), size: 22, color: '666666' })],
+        children: [new TextRun({ text: contactParts.join('  |  '), size: 20, font: 'Calibri', color: '666666' })],
         alignment: AlignmentType.CENTER,
         spacing: { after: 240 },
       })
     );
   }
 
-  // Summary
+  // ═══════════════════════════════════════════════════════════════
+  // SUMMARY
+  // ═══════════════════════════════════════════════════════════════
   if (data.summary) {
-    children.push(heading('PROFESSIONAL SUMMARY'));
+    children.push(sectionHeading('Professional Summary'));
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: data.summary, size: 20 })],
+        children: [new TextRun({ text: data.summary, size: 21, font: 'Calibri' })],
         spacing: { after: 120 },
       })
     );
   }
 
-  // Experience
+  // ═══════════════════════════════════════════════════════════════
+  // SKILLS (pipe-separated)
+  // ═══════════════════════════════════════════════════════════════
+  const allSkills = [
+    ...(data.skills || []).map(s => typeof s === 'string' ? s : String(s)),
+    ...(data.tools || []).map(t => typeof t === 'string' ? t : String(t)),
+  ];
+  if (allSkills.length > 0) {
+    children.push(sectionHeading('Skills'));
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: allSkills.join('  |  '), size: 21, font: 'Calibri' })],
+        spacing: { after: 120 },
+      })
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PROFESSIONAL EXPERIENCE
+  // ═══════════════════════════════════════════════════════════════
   if (data.experience && data.experience.length > 0) {
-    children.push(heading('WORK EXPERIENCE'));
+    children.push(sectionHeading('Professional Experience'));
+
     for (const exp of data.experience) {
       if (typeof exp === 'object') {
-        const line = [exp.title, exp.company, exp.duration].filter(Boolean).join('  |  ');
+        // Role header: Company | Role | Duration
+        const headerParts = [];
+        if (exp.company) headerParts.push(exp.company);
+        if (exp.title) headerParts.push(exp.title);
+
+        const headerRuns = [];
+        if (exp.company) {
+          headerRuns.push(new TextRun({ text: exp.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' }));
+          if (exp.title) headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
+        }
+        if (exp.title) {
+          headerRuns.push(new TextRun({ text: exp.title, bold: true, size: 23, font: 'Calibri' }));
+        }
+        if (exp.duration) {
+          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: exp.duration, size: 21, font: 'Calibri', color: '666666' }));
+        }
+
         children.push(
-          new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })], spacing: { before: 80 } })
+          new Paragraph({ children: headerRuns, spacing: { before: 180, after: 40 } })
         );
-        if (exp.responsibilities) {
+
+        // Company description
+        if (exp.description) {
           children.push(
             new Paragraph({
-              children: [new TextRun({ text: exp.responsibilities, size: 20 })],
-              spacing: { after: 100 },
+              children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
+              spacing: { after: 60 },
             })
           );
         }
+
+        // Responsibility bullets
+        const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
+          (exp.responsibilities ? [exp.responsibilities] : []);
+
+        for (const resp of responsibilities) {
+          children.push(bulletParagraph(String(resp)));
+        }
       } else {
-        children.push(
-          new Paragraph({ children: [new TextRun({ text: String(exp), size: 20 })], spacing: { after: 80 } })
-        );
+        children.push(bulletParagraph(String(exp)));
       }
     }
   }
 
-  // Education
+  // ═══════════════════════════════════════════════════════════════
+  // PROJECTS
+  // ═══════════════════════════════════════════════════════════════
+  if (data.projects && data.projects.length > 0) {
+    children.push(sectionHeading('Projects'));
+    for (const proj of data.projects) {
+      children.push(bulletParagraph(String(proj)));
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // LEADERSHIP EXPERIENCE
+  // ═══════════════════════════════════════════════════════════════
+  if (data.leadership && data.leadership.length > 0) {
+    children.push(sectionHeading('Leadership Experience'));
+    for (const item of data.leadership) {
+      if (typeof item === 'object' && item.title) {
+        const headerRuns = [];
+        if (item.title) headerRuns.push(new TextRun({ text: item.title, bold: true, size: 23, font: 'Calibri' }));
+        if (item.company) {
+          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: item.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' }));
+        }
+        if (item.duration) {
+          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: item.duration, size: 21, font: 'Calibri', color: '666666' }));
+        }
+        children.push(
+          new Paragraph({ children: headerRuns, spacing: { before: 120, after: 40 } })
+        );
+        const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
+        for (const r of resps) {
+          children.push(bulletParagraph(String(r)));
+        }
+      } else {
+        children.push(bulletParagraph(String(item)));
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // EDUCATION
+  // ═══════════════════════════════════════════════════════════════
   if (data.education && data.education.length > 0) {
-    children.push(heading('EDUCATION'));
+    children.push(sectionHeading('Education'));
     for (const edu of data.education) {
       if (typeof edu === 'object') {
-        const line = [edu.degree, edu.institution].filter(Boolean).join('  |  ');
-        children.push(
-          new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })] })
-        );
-        if (edu.year) {
-          children.push(
-            new Paragraph({
-              children: [new TextRun({ text: edu.year, size: 20, color: '888888' })],
-              spacing: { after: 100 },
-            })
-          );
+        const runs = [];
+        if (edu.degree) runs.push(new TextRun({ text: edu.degree, bold: true, size: 23, font: 'Calibri' }));
+        if (edu.institution) {
+          if (runs.length) runs.push(new TextRun({ text: '\n', size: 21, font: 'Calibri' }));
+          runs.push(new TextRun({ text: edu.institution, size: 21, font: 'Calibri', color: '1F3864', bold: true }));
         }
+        if (edu.year) {
+          runs.push(new TextRun({ text: '  |  ', size: 21, font: 'Calibri', color: '666666' }));
+          runs.push(new TextRun({ text: edu.year, size: 21, font: 'Calibri', color: '666666' }));
+        }
+        children.push(
+          new Paragraph({ children: runs, spacing: { before: 80, after: 100 } })
+        );
       } else {
         children.push(
-          new Paragraph({ children: [new TextRun({ text: String(edu), size: 20 })], spacing: { after: 80 } })
+          new Paragraph({
+            children: [new TextRun({ text: String(edu), size: 21, font: 'Calibri' })],
+            spacing: { after: 80 },
+          })
         );
       }
     }
   }
 
-  // Skills
-  if (data.skills && data.skills.length > 0) {
-    children.push(heading('SKILLS'));
-    const skillTexts = data.skills.map(s => typeof s === 'string' ? s : String(s));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: skillTexts.join('  \u2022  '), size: 20 })],
-        spacing: { after: 100 },
-      })
-    );
-  }
-
-  // Projects
-  if (data.projects && data.projects.length > 0) {
-    children.push(heading('PROJECTS'));
-    for (const proj of data.projects) {
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: String(proj), size: 20 })], spacing: { after: 80 } })
-      );
-    }
-  }
-
-  // Certifications
+  // ═══════════════════════════════════════════════════════════════
+  // CERTIFICATIONS
+  // ═══════════════════════════════════════════════════════════════
   if (data.certifications && data.certifications.length > 0) {
-    children.push(heading('CERTIFICATIONS'));
+    children.push(sectionHeading('Certifications'));
     for (const cert of data.certifications) {
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: String(cert), size: 20 })], spacing: { after: 80 } })
-      );
+      children.push(bulletParagraph(String(cert)));
     }
   }
 
-  // Achievements
+  // ═══════════════════════════════════════════════════════════════
+  // ACHIEVEMENTS
+  // ═══════════════════════════════════════════════════════════════
   if (data.achievements && data.achievements.length > 0) {
-    children.push(heading('ACHIEVEMENTS'));
+    children.push(sectionHeading('Achievements'));
     for (const ach of data.achievements) {
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: String(ach), size: 20 })], spacing: { after: 80 } })
-      );
+      children.push(bulletParagraph(String(ach)));
     }
   }
 
-  // Tools
-  if (data.tools && data.tools.length > 0) {
-    children.push(heading('TOOLS & TECHNOLOGIES'));
-    const toolTexts = data.tools.map(t => typeof t === 'string' ? t : String(t));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: toolTexts.join('  \u2022  '), size: 20 })],
-        spacing: { after: 100 },
-      })
-    );
-  }
-
-  // Hobbies
+  // ═══════════════════════════════════════════════════════════════
+  // HOBBIES
+  // ═══════════════════════════════════════════════════════════════
   if (data.hobbies && data.hobbies.length > 0) {
-    children.push(heading('HOBBIES & INTERESTS'));
+    children.push(sectionHeading('Hobbies & Interests'));
     const hobbyTexts = data.hobbies.map(h => typeof h === 'string' ? h : String(h));
     children.push(
-      new Paragraph({ children: [new TextRun({ text: hobbyTexts.join(', '), size: 20 })] })
+      new Paragraph({
+        children: [new TextRun({ text: hobbyTexts.join('  |  '), size: 21, font: 'Calibri' })],
+      })
     );
   }
 

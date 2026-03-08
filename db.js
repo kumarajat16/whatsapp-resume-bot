@@ -51,14 +51,17 @@ async function initDb() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       resume_request_id UUID UNIQUE REFERENCES resume_requests(id) ON DELETE CASCADE,
       name TEXT,
+      headline TEXT,
       email TEXT,
       phone TEXT,
       location TEXT,
       summary TEXT,
+      target_role TEXT,
       experience JSONB DEFAULT '[]',
       education JSONB DEFAULT '[]',
       skills JSONB DEFAULT '[]',
       projects JSONB DEFAULT '[]',
+      leadership JSONB DEFAULT '[]',
       certifications JSONB DEFAULT '[]',
       achievements JSONB DEFAULT '[]',
       tools JSONB DEFAULT '[]',
@@ -76,6 +79,16 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+
+  // Add new columns if they don't exist (for existing deployments)
+  const addCol = async (col, type) => {
+    try {
+      await pool.query(`ALTER TABLE resume_data ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+    } catch (_) { /* column already exists */ }
+  };
+  await addCol('headline', 'TEXT');
+  await addCol('target_role', 'TEXT');
+  await addCol('leadership', "JSONB DEFAULT '[]'");
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -133,7 +146,6 @@ async function getActiveResumeRequest(userId) {
 }
 
 async function createResumeRequest(userId, flow) {
-  // Abandon any existing active requests
   await pool.query(
     `UPDATE resume_requests SET status = 'abandoned', updated_at = NOW()
      WHERE user_id = $1 AND status NOT IN ('completed', 'abandoned')`,
@@ -172,35 +184,41 @@ async function getResumeData(resumeRequestId) {
 
 async function saveResumeData(resumeRequestId, data) {
   await pool.query(
-    `INSERT INTO resume_data (resume_request_id, name, email, phone, location, summary, experience, education, skills, projects, certifications, achievements, tools, hobbies)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    `INSERT INTO resume_data (resume_request_id, name, headline, email, phone, location, summary, target_role, experience, education, skills, projects, leadership, certifications, achievements, tools, hobbies)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (resume_request_id)
      DO UPDATE SET
        name = COALESCE(NULLIF($2, ''), resume_data.name),
-       email = COALESCE(NULLIF($3, ''), resume_data.email),
-       phone = COALESCE(NULLIF($4, ''), resume_data.phone),
-       location = COALESCE(NULLIF($5, ''), resume_data.location),
-       summary = COALESCE(NULLIF($6, ''), resume_data.summary),
-       experience = CASE WHEN $7::jsonb = '[]'::jsonb THEN resume_data.experience ELSE $7::jsonb END,
-       education = CASE WHEN $8::jsonb = '[]'::jsonb THEN resume_data.education ELSE $8::jsonb END,
-       skills = CASE WHEN $9::jsonb = '[]'::jsonb THEN resume_data.skills ELSE $9::jsonb END,
-       projects = CASE WHEN $10::jsonb = '[]'::jsonb THEN resume_data.projects ELSE $10::jsonb END,
-       certifications = CASE WHEN $11::jsonb = '[]'::jsonb THEN resume_data.certifications ELSE $11::jsonb END,
-       achievements = CASE WHEN $12::jsonb = '[]'::jsonb THEN resume_data.achievements ELSE $12::jsonb END,
-       tools = CASE WHEN $13::jsonb = '[]'::jsonb THEN resume_data.tools ELSE $13::jsonb END,
-       hobbies = CASE WHEN $14::jsonb = '[]'::jsonb THEN resume_data.hobbies ELSE $14::jsonb END,
+       headline = COALESCE(NULLIF($3, ''), resume_data.headline),
+       email = COALESCE(NULLIF($4, ''), resume_data.email),
+       phone = COALESCE(NULLIF($5, ''), resume_data.phone),
+       location = COALESCE(NULLIF($6, ''), resume_data.location),
+       summary = COALESCE(NULLIF($7, ''), resume_data.summary),
+       target_role = COALESCE(NULLIF($8, ''), resume_data.target_role),
+       experience = CASE WHEN $9::jsonb = '[]'::jsonb THEN resume_data.experience ELSE $9::jsonb END,
+       education = CASE WHEN $10::jsonb = '[]'::jsonb THEN resume_data.education ELSE $10::jsonb END,
+       skills = CASE WHEN $11::jsonb = '[]'::jsonb THEN resume_data.skills ELSE $11::jsonb END,
+       projects = CASE WHEN $12::jsonb = '[]'::jsonb THEN resume_data.projects ELSE $12::jsonb END,
+       leadership = CASE WHEN $13::jsonb = '[]'::jsonb THEN resume_data.leadership ELSE $13::jsonb END,
+       certifications = CASE WHEN $14::jsonb = '[]'::jsonb THEN resume_data.certifications ELSE $14::jsonb END,
+       achievements = CASE WHEN $15::jsonb = '[]'::jsonb THEN resume_data.achievements ELSE $15::jsonb END,
+       tools = CASE WHEN $16::jsonb = '[]'::jsonb THEN resume_data.tools ELSE $16::jsonb END,
+       hobbies = CASE WHEN $17::jsonb = '[]'::jsonb THEN resume_data.hobbies ELSE $17::jsonb END,
        updated_at = NOW()`,
     [
       resumeRequestId,
       data.name || '',
+      data.headline || '',
       data.email || '',
       data.phone || '',
       data.location || '',
       data.summary || '',
+      data.target_role || '',
       JSON.stringify(data.experience || []),
       JSON.stringify(data.education || []),
       JSON.stringify(data.skills || []),
       JSON.stringify(data.projects || []),
+      JSON.stringify(data.leadership || []),
       JSON.stringify(data.certifications || []),
       JSON.stringify(data.achievements || []),
       JSON.stringify(data.tools || []),
