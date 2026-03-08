@@ -8,23 +8,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const db = require('./db');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-app.get('/health', (req, res) => {
-  res.json({
-    ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
-    TWILIO_ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN: !!process.env.TWILIO_AUTH_TOKEN,
-    BASE_URL: process.env.BASE_URL || 'NOT SET',
-    PORT: process.env.PORT,
-  });
-});
-
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Twilio REST client for outbound messages (used after async processing)
 const twilio = require('twilio');
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -41,24 +31,118 @@ async function sendWhatsApp(to, body, mediaUrl) {
   await twilioClient.messages.create(params);
 }
 
-// Session store: phone -> { messages: [], resumeData: {} }
-const sessions = new Map();
-
-// Temp file store: token -> { filePath } (auto-cleaned after 10 min)
+// Temp file store (auto-cleaned after 10 min)
 const tempFiles = new Map();
 
-// Parse Claude's structured plain-text response into a resume data object
+function storeTempFile(filePath) {
+  const token = crypto.randomUUID();
+  const cleanup = setTimeout(() => {
+    tempFiles.delete(token);
+    fs.unlink(filePath, () => {});
+  }, 10 * 60 * 1000);
+  tempFiles.set(token, { filePath, cleanup });
+  return token;
+}
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
+app.get('/health', (req, res) => {
+  res.json({
+    ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+    TWILIO_ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN: !!process.env.TWILIO_AUTH_TOKEN,
+    DATABASE_URL: !!process.env.DATABASE_URL,
+    BASE_URL: process.env.BASE_URL || 'NOT SET',
+  });
+});
+
+app.get('/resume/:token', (req, res) => {
+  const entry = tempFiles.get(req.params.token);
+  if (!entry) return res.status(404).send('File not found or expired.');
+  res.download(entry.filePath, 'resume.docx', (err) => {
+    if (err) console.error('File download error:', err);
+  });
+});
+
+// ─── Prompts ─────────────────────────────────────────────────────────────────
+
+const WELCOME_MESSAGE =
+  'Hi!\nI help you create a professional resume in minutes.\n\nReply:\n1 - Create new resume\n2 - Upload existing resume\n\nAnytime type:\ngenerate resume - Build your resume\nedit resume - Modify a section\nrestart - Start over';
+
+const SYSTEM_PROMPT = `You are a friendly resume-building assistant on WhatsApp. Help the user create a professional resume by collecting information in a natural conversation.
+
+Collect the following details, asking only 1-2 questions at a time:
+1. Full name
+2. Location (city, country)
+3. Professional summary (brief 2-3 sentence summary)
+4. Education (degree, institution, graduation year)
+5. Work experience (job title, company, duration, key responsibilities) — they may have more than one role
+6. Skills (technical and soft skills)
+7. Projects (optional)
+8. Certifications (optional)
+9. Achievements (optional)
+10. Tools / technologies (optional)
+
+Rules:
+- Be warm, encouraging, and concise — messages must be short and mobile-friendly
+- Never use markdown (no **, ##, bullet dashes) — use plain text and line breaks only
+- Ask only 1-2 questions per message
+- If the user gives incomplete answers, gently ask for more detail
+- If the conversation starts with pre-loaded resume data, confirm what you found and only ask for missing or unclear fields — do not re-ask for information already provided
+- Once you have all the core information (name, location, education, experience, skills), give a short summary of what was collected, then ask:
+  "Great, I have everything I need! Shall I generate your resume now? Reply YES to continue."
+- If the user replies YES (or yes / y), respond with exactly this token and nothing else: GENERATE_RESUME
+- If the user seems confused or wants to restart, guide them back on track`;
+
+const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text or a conversation, extract the information and return it in this EXACT plain-text format with these EXACT section headers. Do not use JSON. Do not add any explanation.
+
+Name: [full name]
+Location: [city, country]
+Summary: [2-3 sentence professional summary in third person]
+
+Education:
+* [Degree], [Institution], [Year]
+
+Experience:
+* [Job Title], [Company], [Duration], [Key responsibilities]
+
+Skills:
+* [Skill]
+
+Projects:
+* [Project description]
+
+Certifications:
+* [Certification]
+
+Achievements:
+* [Achievement]
+
+Tools:
+* [Tool or technology]
+
+Rules:
+- Use exactly the section headers above
+- Use * bullet points for list sections
+- If a section has no data, omit it entirely
+- Do not add any other text, JSON, or markdown`;
+
+// ─── Structured text parser ──────────────────────────────────────────────────
+
 function parseStructuredText(raw) {
   console.log('Claude raw response:', raw);
 
   const result = {
     name: '',
-    city: '',
+    location: '',
     summary: '',
     education: [],
     experience: [],
     skills: [],
     projects: [],
+    certifications: [],
+    achievements: [],
+    tools: [],
     hobbies: [],
   };
 
@@ -69,24 +153,22 @@ function parseStructuredText(raw) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // Single-value fields: "Name: John Doe"
-    const inlineMatch = trimmed.match(/^(Name|City|Summary):\s*(.+)$/i);
+    const inlineMatch = trimmed.match(/^(Name|Location|City|Summary):\s*(.+)$/i);
     if (inlineMatch) {
-      result[inlineMatch[1].toLowerCase()] = inlineMatch[2].trim();
-      currentSection = inlineMatch[1].toLowerCase();
+      const key = inlineMatch[1].toLowerCase() === 'city' ? 'location' : inlineMatch[1].toLowerCase();
+      result[key] = inlineMatch[2].trim();
+      currentSection = key;
       continue;
     }
 
-    // Section headers: "Education:", "Experience:", etc.
-    const sectionMatch = trimmed.match(/^(Education|Experience|Skills|Projects|Hobbies):\s*(.*)$/i);
+    const sectionMatch = trimmed.match(/^(Education|Experience|Skills|Projects|Certifications|Achievements|Tools|Hobbies):\s*(.*)$/i);
     if (sectionMatch) {
       currentSection = sectionMatch[1].toLowerCase();
       continue;
     }
 
-    // Bullet points under a list section
-    if (currentSection && (trimmed.startsWith('*') || trimmed.startsWith('-') || trimmed.startsWith('•'))) {
-      const val = trimmed.replace(/^[*\-•]\s*/, '').trim();
+    if (currentSection && (trimmed.startsWith('*') || trimmed.startsWith('-') || trimmed.startsWith('\u2022'))) {
+      const val = trimmed.replace(/^[*\-\u2022]\s*/, '').trim();
       if (!val) continue;
 
       if (currentSection === 'education') {
@@ -113,75 +195,7 @@ function parseStructuredText(raw) {
   return result;
 }
 
-function storeTempFile(filePath) {
-  const token = crypto.randomUUID();
-  const cleanup = setTimeout(() => {
-    tempFiles.delete(token);
-    fs.unlink(filePath, () => {});
-  }, 10 * 60 * 1000);
-  tempFiles.set(token, { filePath, cleanup });
-  return token;
-}
-
-app.get('/resume/:token', (req, res) => {
-  const entry = tempFiles.get(req.params.token);
-  if (!entry) return res.status(404).send('File not found or expired.');
-  res.download(entry.filePath, 'resume.docx', (err) => {
-    if (err) console.error('File download error:', err);
-  });
-});
-
-const WELCOME_MESSAGE =
-  'Hi 👋\nI help you create a professional resume in 2 minutes.\n\nReply:\n1 - Create new resume\n2 - Upload existing resume';
-
-const SYSTEM_PROMPT = `You are a friendly resume-building assistant on WhatsApp. Help the user create a professional resume by collecting information in a natural conversation.
-
-Collect the following details, asking only 1-2 questions at a time:
-1. Full name
-2. City / location
-3. Education (degree, institution, graduation year)
-4. Work experience (job title, company, duration, key responsibilities) — they may have more than one role
-5. Skills (technical and soft skills)
-6. Projects (optional)
-7. Hobbies / interests (optional)
-
-Rules:
-- Be warm, encouraging, and concise — messages must be short and mobile-friendly
-- Never use markdown (no **, ##, bullet dashes) — use plain text and line breaks only
-- Ask only 1-2 questions per message
-- If the user gives incomplete answers, gently ask for more detail
-- If the conversation starts with pre-loaded resume data, confirm what you found and only ask for missing or unclear fields — do not re-ask for information already provided
-- Once you have all the core information (name, city, education, experience, skills), give a short summary of what was collected, then ask:
-  "Great, I have everything I need! Shall I generate your resume now? Reply YES to continue."
-- If the user replies YES (or yes / y), respond with exactly this token and nothing else: GENERATE_RESUME
-- If the user seems confused or wants to restart, guide them back on track`;
-
-const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text or a conversation, extract the information and return it in this EXACT plain-text format with these EXACT section headers. Do not use JSON. Do not add any explanation.
-
-Name: [full name]
-City: [city, country]
-Summary: [2-3 sentence professional summary in third person]
-
-Education:
-* [Degree], [Institution], [Year]
-
-Experience:
-* [Job Title], [Company], [Duration], [Key responsibilities]
-
-Skills:
-* [Skill]
-
-Projects:
-* [Project description]
-
-Hobbies:
-* [Hobby]
-
-Rules:
-- Use exactly the section headers above
-- Use * bullet points for list sections
-- If a section has no data, omit it entirely
-- Do not add any other text, JSON, or markdown`;
+// ─── Webhook ─────────────────────────────────────────────────────────────────
 
 app.post('/whatsapp', async (req, res) => {
   const incomingMsg = (req.body.Body || '').trim();
@@ -190,27 +204,19 @@ app.post('/whatsapp', async (req, res) => {
   const mediaUrl = req.body.MediaUrl0 || null;
   const mediaContentType = req.body.MediaContentType0 || '';
 
-  console.log('NumMedia:', req.body.NumMedia);
-  console.log('MediaUrl:', req.body.MediaUrl0);
-  console.log('MediaType:', req.body.MediaContentType0);
+  console.log('From:', from, 'Msg:', incomingMsg, 'Media:', numMedia);
 
-  // Media upload — respond immediately then process in background
+  // Media upload — immediate ack + background
   if (numMedia > 0 && mediaUrl) {
-    const twiml = new MessagingResponse();
-    twiml.message('Thanks! I received your resume. Extracting the information now...');
-    res.type('text/xml');
-    res.send(twiml.toString());
-
-    // Fire-and-forget background processing
-    processMediaUpload(from, mediaUrl, mediaContentType).catch((err) => {
+    sendTwiml(res, 'Thanks! I received your resume. Extracting the information now...');
+    processMediaUpload(from, mediaUrl, mediaContentType).catch(err => {
       console.error('Background media processing error:', err);
-      sendWhatsApp(from, 'Sorry, I had trouble processing your file. Please try again or type 1 to start fresh.').catch(console.error);
+      sendWhatsApp(from, 'Sorry, I had trouble processing your file. Please try again or type restart.').catch(console.error);
     });
-
     return;
   }
 
-  // Normal text message — handle synchronously
+  // Text message
   let replyText;
   let mediaReplyUrl = null;
 
@@ -226,46 +232,169 @@ app.post('/whatsapp', async (req, res) => {
   const twiml = new MessagingResponse();
   const msg = twiml.message(replyText);
   if (mediaReplyUrl) msg.media(mediaReplyUrl);
-
   res.type('text/xml');
   res.send(twiml.toString());
 });
 
-async function handleMessage(from, incomingMsg) {
-  const lower = incomingMsg.toLowerCase();
+function sendTwiml(res, text) {
+  const twiml = new MessagingResponse();
+  twiml.message(text);
+  res.type('text/xml');
+  res.send(twiml.toString());
+}
 
-  if (lower === '0' || lower === 'menu' || lower === 'restart') {
-    sessions.delete(from);
+// ─── Message handler ─────────────────────────────────────────────────────────
+
+async function handleMessage(from, incomingMsg) {
+  const lower = incomingMsg.toLowerCase().trim();
+  const user = await db.findOrCreateUser(from);
+
+  // Restart / menu
+  if (lower === 'restart' || lower === '0' || lower === 'menu') {
+    const active = await db.getActiveResumeRequest(user.id);
+    if (active) await db.updateResumeRequestStatus(active.id, 'abandoned');
     return { text: WELCOME_MESSAGE };
   }
 
-  const session = sessions.get(from);
+  let resumeReq = await db.getActiveResumeRequest(user.id);
 
-  if (!session) {
-    if (incomingMsg === '1') {
-      sessions.set(from, { messages: [], resumeData: {} });
-      const reply = await askClaude(from, 'Hi, I want to create a new resume. Please get started.');
+  // No active request
+  if (!resumeReq) {
+    if (lower === '1') {
+      resumeReq = await db.createResumeRequest(user.id);
+      const reply = await askClaude(resumeReq.id, 'Hi, I want to create a new resume. Please get started.');
       return { text: reply };
     }
-    if (incomingMsg === '2') {
+    if (lower === '2') {
+      await db.createResumeRequest(user.id);
       return { text: 'Please send your resume file (PDF or Word .docx) and I will extract your information automatically.' };
     }
     return { text: WELCOME_MESSAGE };
   }
 
-  const claudeReply = await askClaude(from, incomingMsg);
+  // Generate resume — async (Claude extraction + preview)
+  if (lower === 'generate resume' || lower === 'generate') {
+    processGeneratePreview(from, resumeReq.id).catch(err => {
+      console.error('Generate preview error:', err);
+      sendWhatsApp(from, 'Sorry, there was an error building your preview. Please try again.').catch(console.error);
+    });
+    return { text: 'Building your resume preview...' };
+  }
+
+  // Download — async (DOCX generation)
+  if (lower === 'download') {
+    processDownload(from, resumeReq.id).catch(err => {
+      console.error('Download error:', err);
+      sendWhatsApp(from, 'Sorry, there was an error generating your resume document.').catch(console.error);
+    });
+    return { text: 'Generating your resume document...' };
+  }
+
+  // Edit resume
+  if (lower === 'edit resume' || lower === 'edit') {
+    const data = await db.getResumeData(resumeReq.id);
+    if (Object.keys(data).length === 0) {
+      return { text: 'No resume data found yet. Type 1 to create a new resume or send your resume file.' };
+    }
+    const reply = await askClaude(resumeReq.id,
+      'I want to edit my resume. Here is my current data:\n' + JSON.stringify(data, null, 2) + '\n\nPlease ask me which section I want to modify.');
+    return { text: reply };
+  }
+
+  // Normal conversation
+  const claudeReply = await askClaude(resumeReq.id, incomingMsg);
 
   if (claudeReply.trim() === 'GENERATE_RESUME') {
-    const messages = session.messages;
-    const existingData = session.resumeData || {};
-    sessions.delete(from);
-    return await buildAndSendResume(from, messages, existingData);
+    processGeneratePreview(from, resumeReq.id).catch(err => {
+      console.error('Generate preview error:', err);
+      sendWhatsApp(from, 'Sorry, there was an error building your preview. Please try again.').catch(console.error);
+    });
+    return { text: 'Building your resume preview...' };
   }
 
   return { text: claudeReply };
 }
 
-// Background processor — called after TwiML ack is sent to Twilio
+// ─── Async processors ────────────────────────────────────────────────────────
+
+async function processGeneratePreview(from, resumeRequestId) {
+  await extractAndSaveFromConversation(resumeRequestId);
+  const data = await db.getResumeData(resumeRequestId);
+
+  let preview = 'Your resume is ready. Here is a preview:\n\n';
+
+  if (data.name) preview += 'Name: ' + data.name + '\n';
+  if (data.location) preview += 'Location: ' + data.location + '\n';
+  preview += '\n';
+
+  if (data.summary) preview += 'Summary:\n' + data.summary + '\n\n';
+
+  if (data.experience && data.experience.length > 0) {
+    preview += 'Experience:\n';
+    for (const exp of data.experience) {
+      if (typeof exp === 'object') {
+        preview += [exp.title, exp.company, exp.duration].filter(Boolean).join(' - ') + '\n';
+      } else {
+        preview += exp + '\n';
+      }
+    }
+    preview += '\n';
+  }
+
+  if (data.education && data.education.length > 0) {
+    preview += 'Education:\n';
+    for (const edu of data.education) {
+      if (typeof edu === 'object') {
+        preview += [edu.degree, edu.institution, edu.year].filter(Boolean).join(', ') + '\n';
+      } else {
+        preview += edu + '\n';
+      }
+    }
+    preview += '\n';
+  }
+
+  if (data.skills && data.skills.length > 0) {
+    preview += 'Skills:\n' + data.skills.join(', ') + '\n\n';
+  }
+
+  if (data.projects && data.projects.length > 0) {
+    preview += 'Projects:\n' + data.projects.join(', ') + '\n\n';
+  }
+
+  if (data.certifications && data.certifications.length > 0) {
+    preview += 'Certifications:\n' + data.certifications.join(', ') + '\n\n';
+  }
+
+  if (data.achievements && data.achievements.length > 0) {
+    preview += 'Achievements:\n' + data.achievements.join(', ') + '\n\n';
+  }
+
+  if (data.tools && data.tools.length > 0) {
+    preview += 'Tools:\n' + data.tools.join(', ') + '\n\n';
+  }
+
+  preview += 'Reply:\nDOWNLOAD - receive your resume as a Word document\nEDIT - modify your resume';
+
+  await sendWhatsApp(from, preview);
+}
+
+async function processDownload(from, resumeRequestId) {
+  const data = await db.getResumeData(resumeRequestId);
+
+  if (Object.keys(data).length === 0) {
+    await sendWhatsApp(from, 'No resume data found. Please create a resume first by typing 1.');
+    return;
+  }
+
+  const filePath = await generateDocx(data);
+  const token = storeTempFile(filePath);
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
+  const fileUrl = `${baseUrl}/resume/${token}`;
+
+  await db.updateResumeRequestStatus(resumeRequestId, 'completed');
+  await sendWhatsApp(from, 'Here is your resume!\n\nType restart to create a new one.', fileUrl);
+}
+
 async function processMediaUpload(from, mediaUrl, contentType) {
   const supportedTypes = [
     'application/pdf',
@@ -277,13 +406,18 @@ async function processMediaUpload(from, mediaUrl, contentType) {
     return;
   }
 
+  // Ensure user and active request exist
+  const user = await db.findOrCreateUser(from);
+  let resumeReq = await db.getActiveResumeRequest(user.id);
+  if (!resumeReq) resumeReq = await db.createResumeRequest(user.id);
+
   // Step 1: Download
   let buffer, tmpPath;
   try {
     ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
   } catch (err) {
     console.error('Background download error:', err.message);
-    await sendWhatsApp(from, 'I could not download your file. Please try again or type 1 to start fresh.');
+    await sendWhatsApp(from, 'I could not download your file. Please try again or type restart.');
     return;
   }
 
@@ -300,14 +434,14 @@ async function processMediaUpload(from, mediaUrl, contentType) {
     console.log('Extracted text length:', text.length);
   } catch (err) {
     console.error('Text extraction error:', err.message);
-    await sendWhatsApp(from, 'I could not read your file. It may be corrupted or password-protected. Please try another file or type 1 to start fresh.');
+    await sendWhatsApp(from, 'I could not read your file. It may be corrupted or password-protected. Please try another file.');
     return;
   } finally {
     fs.unlink(tmpPath, () => {});
   }
 
   if (!text.trim()) {
-    await sendWhatsApp(from, 'Your file appears to be empty or image-based. Please send a text-based PDF or Word file, or type 1 to create a resume from scratch.');
+    await sendWhatsApp(from, 'Your file appears to be empty or image-based. Please send a text-based PDF or Word file.');
     return;
   }
 
@@ -316,105 +450,64 @@ async function processMediaUpload(from, mediaUrl, contentType) {
   try {
     const extraction = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 1024,
+      max_tokens: 2000,
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: 'Extract resume data from this document:\n\n' + text.slice(0, 8000) }],
     });
     resumeData = parseStructuredText(extraction.content[0].text);
   } catch (err) {
     console.error('Resume data extraction error:', err.message);
-    sessions.set(from, { messages: [], resumeData: {} });
-    const fallbackReply = await askClaude(from, 'I uploaded my resume but could not read all the data. Please ask me for my details one section at a time.');
-    await sendWhatsApp(from, 'I could not fully read your resume. Let me ask you a few quick questions instead.\n\n' + fallbackReply);
+    await sendWhatsApp(from, 'I could not extract data from your resume. Please type 1 to create a resume manually.');
     return;
   }
 
-  // Step 4: Create session and ask Claude to confirm + fill gaps
-  sessions.set(from, { messages: [], resumeData });
-  const contextMessage = 'I have uploaded my existing resume. Here is the data extracted from it:\n' + JSON.stringify(resumeData, null, 2) + '\n\nPlease confirm what you found and ask me about any missing or unclear fields.';
-  const claudeReply = await askClaude(from, contextMessage);
+  // Step 4: Save to database
+  await db.saveFullResumeData(resumeReq.id, resumeData);
+
+  // Step 5: Start conversation with context
+  const contextMsg = 'I have uploaded my existing resume. Here is the data extracted:\n' +
+    JSON.stringify(resumeData, null, 2) +
+    '\n\nPlease confirm what you found and ask me about any missing or unclear fields.';
+  const claudeReply = await askClaude(resumeReq.id, contextMsg);
 
   await sendWhatsApp(from, 'I found some information in your resume. Let me confirm a few details.\n\n' + claudeReply);
 }
 
-async function handleMediaUpload(from, contentType, preDownloaded) {
-  const supportedTypes = [
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  ];
+// ─── Extract from conversation ───────────────────────────────────────────────
 
-  if (!supportedTypes.includes(contentType)) {
-    return {
-      text: 'Sorry, I can only read PDF or Word (.docx) files.\n\nPlease send one of those, or type 1 to create a resume from scratch.',
-    };
+async function extractAndSaveFromConversation(resumeRequestId) {
+  const messages = await db.getMessages(resumeRequestId);
+  const existingData = await db.getResumeData(resumeRequestId);
+
+  const convText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+  if (!convText.trim()) return;
+
+  let prompt = '';
+  if (Object.keys(existingData).length > 0) {
+    prompt += 'Here is previously extracted resume data:\n' + JSON.stringify(existingData, null, 2) + '\n\n';
   }
+  prompt += 'And here is the conversation with additional information:\n\n' + convText.slice(0, 8000);
+  prompt += '\n\nExtract the complete resume data, merging all sources. Preserve all existing data and add or update from the conversation.';
 
-  if (!preDownloaded) {
-    return { text: 'I could not download your file. Please try again or type 1 to start fresh.' };
-  }
-
-  const { buffer, tmpPath } = preDownloaded;
-
-  // Extract text from saved /tmp file
-  let text = '';
-  try {
-    if (contentType === 'application/pdf') {
-      const data = await pdfParse(buffer);
-      text = data.text;
-    } else {
-      const result = await mammoth.extractRawText({ path: tmpPath });
-      text = result.value;
-    }
-    console.log('Extracted text length:', text.length);
-  } catch (err) {
-    console.error('Text extraction error:', err.message);
-    return {
-      text: 'I could not read your file. It may be corrupted or password-protected. Please try another file or type 1 to start fresh.',
-    };
-  } finally {
-    fs.unlink(tmpPath, () => {});
-  }
-
-  if (!text.trim()) {
-    return {
-      text: 'Your file appears to be empty or image-based. Please send a text-based PDF or Word file, or type 1 to create a resume from scratch.',
-    };
-  }
-
-  // Extract structured resume data via Claude
-  let resumeData = {};
   try {
     const extraction = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 1024,
+      max_tokens: 2000,
       system: EXTRACT_PROMPT,
-      messages: [{ role: 'user', content: `Extract resume data from this document:\n\n${text.slice(0, 8000)}` }],
+      messages: [{ role: 'user', content: prompt }],
     });
-    resumeData = parseStructuredText(extraction.content[0].text);
+
+    const parsed = parseStructuredText(extraction.content[0].text);
+    await db.saveFullResumeData(resumeRequestId, parsed);
   } catch (err) {
-    console.error('Resume data extraction error:', err.message);
-    // Fall back: start a fresh session and ask Claude to collect info manually
-    sessions.set(from, { messages: [], resumeData: {} });
-    const fallbackReply = await askClaude(from, 'I uploaded my resume but could not read all the data. Please ask me for my details one section at a time.');
-    return { text: 'I could not fully read your resume. Let me ask you a few quick questions instead.\n\n' + fallbackReply };
+    console.error('Extraction from conversation failed:', err.message);
   }
-
-  // Create session with pre-loaded data
-  sessions.set(from, { messages: [], resumeData });
-
-  // Feed extracted data into the conversation so Claude can confirm and ask for gaps
-  const contextMessage = `I have uploaded my existing resume. Here is the data extracted from it:\n${JSON.stringify(resumeData, null, 2)}\n\nPlease confirm what you found and ask me about any missing or unclear fields.`;
-
-  const claudeReply = await askClaude(from, contextMessage);
-
-  return {
-    text: 'I found some information in your resume. Let me confirm a few details.\n\n' + claudeReply,
-  };
 }
 
+// ─── Download Twilio media ───────────────────────────────────────────────────
+
 async function downloadTwilioMedia(mediaUrl, contentType) {
-  console.log('Media type:', contentType);
-  console.log('Downloading media immediately...');
+  console.log('Downloading media...');
 
   const credentials = Buffer.from(
     process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
@@ -426,63 +519,45 @@ async function downloadTwilioMedia(mediaUrl, contentType) {
 
   let response = await fetchWithAuth();
 
-  // Retry once on failure
   if (!response.ok) {
-    console.log('Download failed (' + response.status + '), retrying once...');
+    console.log('Download failed (' + response.status + '), retrying...');
     response = await fetchWithAuth();
   }
 
   if (!response.ok) {
-    throw new Error('Media download failed after retry: ' + response.status + ' ' + response.statusText);
+    throw new Error('Media download failed: ' + response.status + ' ' + response.statusText);
   }
 
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
-  console.log('Media downloaded successfully, size:', buffer.length, 'bytes');
+  console.log('Media downloaded, size:', buffer.length, 'bytes');
 
   const ext = contentType === 'application/pdf' ? 'pdf' : 'docx';
   const tmpPath = path.join(os.tmpdir(), 'upload-' + crypto.randomUUID() + '.' + ext);
   fs.writeFileSync(tmpPath, buffer);
-  console.log('File saved to:', tmpPath);
 
   return { buffer, tmpPath };
 }
 
-async function buildAndSendResume(from, messages, existingData) {
-  try {
-    const resumeData = existingData;
+// ─── Ask Claude ──────────────────────────────────────────────────────────────
 
-    // Stateless Claude call — single user message, no conversation history, no system prompt
-    const response = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 2000,
-      messages: [
-        {
-          role: 'user',
-          content: 'Create a professional resume from this structured data:\n\n' + JSON.stringify(resumeData),
-        },
-      ],
-    });
+async function askClaude(resumeRequestId, userMessage) {
+  await db.addMessage(resumeRequestId, 'user', userMessage);
+  const messages = await db.getMessages(resumeRequestId);
 
-    console.log('Resume generation Claude response:', response.content[0].text.slice(0, 200));
+  const response = await anthropic.messages.create({
+    model: 'claude-opus-4-6',
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages,
+  });
 
-    const filePath = await generateDocx(resumeData);
-    const token = storeTempFile(filePath);
-    const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
-    const fileUrl = `${baseUrl}/resume/${token}`;
-
-    // Keep session alive for possible edits
-    sessions.set(from, { messages: [], resumeData });
-
-    return {
-      text: 'Here is your resume! 📄\n\nWould you like to edit anything in your resume?',
-      mediaUrl: fileUrl,
-    };
-  } catch (err) {
-    console.error('Resume build error:', err);
-    return { text: 'Sorry, there was an error generating your resume. Please type 1 to try again.' };
-  }
+  const assistantText = response.content[0].text;
+  await db.addMessage(resumeRequestId, 'assistant', assistantText);
+  return assistantText;
 }
+
+// ─── DOCX generation ─────────────────────────────────────────────────────────
 
 async function generateDocx(data) {
   const heading = (title) =>
@@ -499,17 +574,17 @@ async function generateDocx(data) {
   // Name
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: data.name || '', bold: true, size: 56, color: '2E4057' })],
+      children: [new TextRun({ text: data.name || '', bold: true, size: 48, color: '2E4057' })],
       alignment: AlignmentType.CENTER,
       spacing: { after: 80 },
     })
   );
 
-  // City
-  if (data.city) {
+  // Location
+  if (data.location) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: data.city, size: 22, color: '666666' })],
+        children: [new TextRun({ text: data.location, size: 22, color: '666666' })],
         alignment: AlignmentType.CENTER,
         spacing: { after: 240 },
       })
@@ -527,39 +602,51 @@ async function generateDocx(data) {
     );
   }
 
-  // Education
-  if (data.education && data.education.length > 0) {
-    children.push(heading('EDUCATION'));
-    for (const edu of data.education) {
-      const line = [edu.degree, edu.institution].filter(Boolean).join('  |  ');
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })] })
-      );
-      if (edu.year) {
+  // Experience
+  if (data.experience && data.experience.length > 0) {
+    children.push(heading('WORK EXPERIENCE'));
+    for (const exp of data.experience) {
+      if (typeof exp === 'object') {
+        const line = [exp.title, exp.company, exp.duration].filter(Boolean).join('  |  ');
         children.push(
-          new Paragraph({
-            children: [new TextRun({ text: edu.year, size: 20, color: '888888' })],
-            spacing: { after: 100 },
-          })
+          new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })], spacing: { before: 80 } })
+        );
+        if (exp.responsibilities) {
+          children.push(
+            new Paragraph({
+              children: [new TextRun({ text: exp.responsibilities, size: 20 })],
+              spacing: { after: 100 },
+            })
+          );
+        }
+      } else {
+        children.push(
+          new Paragraph({ children: [new TextRun({ text: exp, size: 20 })], spacing: { after: 80 } })
         );
       }
     }
   }
 
-  // Experience
-  if (data.experience && data.experience.length > 0) {
-    children.push(heading('WORK EXPERIENCE'));
-    for (const exp of data.experience) {
-      const line = [exp.title, exp.company, exp.duration].filter(Boolean).join('  |  ');
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })] })
-      );
-      if (exp.responsibilities) {
+  // Education
+  if (data.education && data.education.length > 0) {
+    children.push(heading('EDUCATION'));
+    for (const edu of data.education) {
+      if (typeof edu === 'object') {
+        const line = [edu.degree, edu.institution].filter(Boolean).join('  |  ');
         children.push(
-          new Paragraph({
-            children: [new TextRun({ text: exp.responsibilities, size: 20 })],
-            spacing: { after: 120 },
-          })
+          new Paragraph({ children: [new TextRun({ text: line, bold: true, size: 22 })] })
+        );
+        if (edu.year) {
+          children.push(
+            new Paragraph({
+              children: [new TextRun({ text: edu.year, size: 20, color: '888888' })],
+              spacing: { after: 100 },
+            })
+          );
+        }
+      } else {
+        children.push(
+          new Paragraph({ children: [new TextRun({ text: edu, size: 20 })], spacing: { after: 80 } })
         );
       }
     }
@@ -570,7 +657,7 @@ async function generateDocx(data) {
     children.push(heading('SKILLS'));
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: data.skills.join('  •  '), size: 20 })],
+        children: [new TextRun({ text: data.skills.join('  \u2022  '), size: 20 })],
         spacing: { after: 100 },
       })
     );
@@ -581,12 +668,40 @@ async function generateDocx(data) {
     children.push(heading('PROJECTS'));
     for (const proj of data.projects) {
       children.push(
-        new Paragraph({
-          children: [new TextRun({ text: proj, size: 20 })],
-          spacing: { after: 80 },
-        })
+        new Paragraph({ children: [new TextRun({ text: proj, size: 20 })], spacing: { after: 80 } })
       );
     }
+  }
+
+  // Certifications
+  if (data.certifications && data.certifications.length > 0) {
+    children.push(heading('CERTIFICATIONS'));
+    for (const cert of data.certifications) {
+      children.push(
+        new Paragraph({ children: [new TextRun({ text: cert, size: 20 })], spacing: { after: 80 } })
+      );
+    }
+  }
+
+  // Achievements
+  if (data.achievements && data.achievements.length > 0) {
+    children.push(heading('ACHIEVEMENTS'));
+    for (const ach of data.achievements) {
+      children.push(
+        new Paragraph({ children: [new TextRun({ text: ach, size: 20 })], spacing: { after: 80 } })
+      );
+    }
+  }
+
+  // Tools
+  if (data.tools && data.tools.length > 0) {
+    children.push(heading('TOOLS & TECHNOLOGIES'));
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: data.tools.join('  \u2022  '), size: 20 })],
+        spacing: { after: 100 },
+      })
+    );
   }
 
   // Hobbies
@@ -612,27 +727,23 @@ async function generateDocx(data) {
   return filePath;
 }
 
-async function askClaude(from, userMessage) {
-  const session = sessions.get(from);
-  session.messages.push({ role: 'user', content: userMessage });
+// ─── Start ───────────────────────────────────────────────────────────────────
 
-  const response = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages: session.messages,
+async function start() {
+  await db.initDb();
+  console.log('Database tables initialized');
+
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log('Server running on port ' + PORT);
+    console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'FOUND' : 'MISSING');
+    console.log('ANTHROPIC_API_KEY:', process.env.ANTHROPIC_API_KEY ? 'FOUND' : 'MISSING');
+    console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? 'FOUND' : 'MISSING');
+    console.log('BASE_URL:', process.env.BASE_URL || 'NOT SET');
   });
-
-  const assistantText = response.content[0].text;
-  session.messages.push({ role: 'assistant', content: assistantText });
-  return assistantText;
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log('Server running on port ' + PORT);
-  console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? 'FOUND' : 'MISSING');
-  console.log('TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? 'FOUND' : 'MISSING');
-  console.log('ANTHROPIC_API_KEY:', process.env.ANTHROPIC_API_KEY ? 'FOUND' : 'MISSING');
-  console.log('BASE_URL:', process.env.BASE_URL || 'NOT SET');
+start().catch(err => {
+  console.error('Failed to start:', err);
+  process.exit(1);
 });
