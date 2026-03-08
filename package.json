@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-resume-bot",
   "version": "1.0.0",
-  "description": "WhatsApp resume bot using Twilio",
+  "description": "ResumeWala.ai - WhatsApp resume builder for Indian job seekers",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -14,6 +14,7 @@
     "mammoth": "^1.11.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.20.0",
+    "razorpay": "^2.9.6",
     "twilio": "^4.19.0"
   },
   "devDependencies": {

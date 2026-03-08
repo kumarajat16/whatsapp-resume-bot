@@ -13,10 +13,27 @@ const pool = new Pool({
 });
 
 async function initDb() {
+  // Check if old schema exists (section-based resume_data) and migrate
+  const oldSchema = await pool.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'resume_data' AND column_name = 'section_name'
+  `);
+  if (oldSchema.rows.length > 0) {
+    console.log('Migrating from old schema...');
+    await pool.query('DROP TABLE IF EXISTS conversation_messages CASCADE');
+    await pool.query('DROP TABLE IF EXISTS resume_data CASCADE');
+    await pool.query('DROP TABLE IF EXISTS resume_requests CASCADE');
+    await pool.query('DROP TABLE IF EXISTS users CASCADE');
+    console.log('Old tables dropped.');
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       phone_number TEXT UNIQUE NOT NULL,
+      daily_messages INT DEFAULT 0,
+      daily_resumes INT DEFAULT 0,
+      last_active_date DATE DEFAULT CURRENT_DATE,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -24,32 +41,44 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS resume_requests (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-      status TEXT NOT NULL DEFAULT 'active',
+      status TEXT NOT NULL DEFAULT 'awaiting_input',
+      flow TEXT DEFAULT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS resume_data (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      resume_request_id UUID REFERENCES resume_requests(id) ON DELETE CASCADE,
-      section_name TEXT NOT NULL,
-      section_data JSONB NOT NULL DEFAULT '{}',
+      resume_request_id UUID UNIQUE REFERENCES resume_requests(id) ON DELETE CASCADE,
+      name TEXT,
+      email TEXT,
+      phone TEXT,
+      location TEXT,
+      summary TEXT,
+      experience JSONB DEFAULT '[]',
+      education JSONB DEFAULT '[]',
+      skills JSONB DEFAULT '[]',
+      projects JSONB DEFAULT '[]',
+      certifications JSONB DEFAULT '[]',
+      achievements JSONB DEFAULT '[]',
+      tools JSONB DEFAULT '[]',
+      hobbies JSONB DEFAULT '[]',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS conversation_messages (
+    CREATE TABLE IF NOT EXISTS messages (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       resume_request_id UUID REFERENCES resume_requests(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      message_type TEXT DEFAULT 'conversation',
       message_text TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_data_section
-      ON resume_data(resume_request_id, section_name);
   `);
 }
+
+// ─── User helpers ──────────────────────────────────────────────────────────
 
 async function findOrCreateUser(phoneNumber) {
   const result = await pool.query(
@@ -61,22 +90,58 @@ async function findOrCreateUser(phoneNumber) {
   return result.rows[0];
 }
 
+async function resetDailyLimitsIfNeeded(userId) {
+  await pool.query(
+    `UPDATE users SET daily_messages = 0, daily_resumes = 0, last_active_date = CURRENT_DATE, updated_at = NOW()
+     WHERE id = $1 AND last_active_date < CURRENT_DATE`,
+    [userId]
+  );
+}
+
+async function incrementMessageCount(userId) {
+  await pool.query(
+    'UPDATE users SET daily_messages = daily_messages + 1, updated_at = NOW() WHERE id = $1',
+    [userId]
+  );
+}
+
+async function incrementResumeCount(userId) {
+  await pool.query(
+    'UPDATE users SET daily_resumes = daily_resumes + 1, updated_at = NOW() WHERE id = $1',
+    [userId]
+  );
+}
+
+async function getUserLimits(userId) {
+  const result = await pool.query(
+    'SELECT daily_messages, daily_resumes FROM users WHERE id = $1',
+    [userId]
+  );
+  return result.rows[0] || { daily_messages: 0, daily_resumes: 0 };
+}
+
+// ─── Resume request helpers ────────────────────────────────────────────────
+
 async function getActiveResumeRequest(userId) {
   const result = await pool.query(
-    "SELECT * FROM resume_requests WHERE user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+    `SELECT * FROM resume_requests
+     WHERE user_id = $1 AND status NOT IN ('completed', 'abandoned')
+     ORDER BY created_at DESC LIMIT 1`,
     [userId]
   );
   return result.rows[0] || null;
 }
 
-async function createResumeRequest(userId) {
+async function createResumeRequest(userId, flow) {
+  // Abandon any existing active requests
   await pool.query(
-    "UPDATE resume_requests SET status = 'abandoned', updated_at = NOW() WHERE user_id = $1 AND status = 'active'",
+    `UPDATE resume_requests SET status = 'abandoned', updated_at = NOW()
+     WHERE user_id = $1 AND status NOT IN ('completed', 'abandoned')`,
     [userId]
   );
   const result = await pool.query(
-    'INSERT INTO resume_requests (user_id) VALUES ($1) RETURNING *',
-    [userId]
+    'INSERT INTO resume_requests (user_id, flow) VALUES ($1, $2) RETURNING *',
+    [userId, flow || null]
   );
   return result.rows[0];
 }
@@ -88,66 +153,98 @@ async function updateResumeRequestStatus(requestId, status) {
   );
 }
 
-async function upsertResumeSection(resumeRequestId, sectionName, sectionData) {
+async function updateResumeRequestFlow(requestId, flow) {
   await pool.query(
-    `INSERT INTO resume_data (resume_request_id, section_name, section_data)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (resume_request_id, section_name)
-     DO UPDATE SET section_data = $3, updated_at = NOW()`,
-    [resumeRequestId, sectionName, JSON.stringify(sectionData)]
+    'UPDATE resume_requests SET flow = $1, updated_at = NOW() WHERE id = $2',
+    [flow, requestId]
   );
 }
+
+// ─── Resume data helpers ───────────────────────────────────────────────────
 
 async function getResumeData(resumeRequestId) {
   const result = await pool.query(
-    'SELECT section_name, section_data FROM resume_data WHERE resume_request_id = $1',
+    'SELECT * FROM resume_data WHERE resume_request_id = $1',
     [resumeRequestId]
   );
-  const data = {};
-  for (const row of result.rows) {
-    data[row.section_name] = row.section_data;
-  }
-  return data;
+  return result.rows[0] || null;
 }
 
-async function saveFullResumeData(resumeRequestId, parsed) {
-  const sections = [
-    'name', 'location', 'summary', 'experience', 'education',
-    'skills', 'projects', 'certifications', 'achievements', 'tools', 'hobbies',
-  ];
-  for (const key of sections) {
-    const val = parsed[key];
-    if (val === undefined || val === null || val === '') continue;
-    if (Array.isArray(val) && val.length === 0) continue;
-    await upsertResumeSection(resumeRequestId, key, val);
-  }
-}
-
-async function addMessage(resumeRequestId, role, text) {
+async function saveResumeData(resumeRequestId, data) {
   await pool.query(
-    'INSERT INTO conversation_messages (resume_request_id, role, message_text) VALUES ($1, $2, $3)',
-    [resumeRequestId, role, text]
+    `INSERT INTO resume_data (resume_request_id, name, email, phone, location, summary, experience, education, skills, projects, certifications, achievements, tools, hobbies)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     ON CONFLICT (resume_request_id)
+     DO UPDATE SET
+       name = COALESCE(NULLIF($2, ''), resume_data.name),
+       email = COALESCE(NULLIF($3, ''), resume_data.email),
+       phone = COALESCE(NULLIF($4, ''), resume_data.phone),
+       location = COALESCE(NULLIF($5, ''), resume_data.location),
+       summary = COALESCE(NULLIF($6, ''), resume_data.summary),
+       experience = CASE WHEN $7::jsonb = '[]'::jsonb THEN resume_data.experience ELSE $7::jsonb END,
+       education = CASE WHEN $8::jsonb = '[]'::jsonb THEN resume_data.education ELSE $8::jsonb END,
+       skills = CASE WHEN $9::jsonb = '[]'::jsonb THEN resume_data.skills ELSE $9::jsonb END,
+       projects = CASE WHEN $10::jsonb = '[]'::jsonb THEN resume_data.projects ELSE $10::jsonb END,
+       certifications = CASE WHEN $11::jsonb = '[]'::jsonb THEN resume_data.certifications ELSE $11::jsonb END,
+       achievements = CASE WHEN $12::jsonb = '[]'::jsonb THEN resume_data.achievements ELSE $12::jsonb END,
+       tools = CASE WHEN $13::jsonb = '[]'::jsonb THEN resume_data.tools ELSE $13::jsonb END,
+       hobbies = CASE WHEN $14::jsonb = '[]'::jsonb THEN resume_data.hobbies ELSE $14::jsonb END,
+       updated_at = NOW()`,
+    [
+      resumeRequestId,
+      data.name || '',
+      data.email || '',
+      data.phone || '',
+      data.location || '',
+      data.summary || '',
+      JSON.stringify(data.experience || []),
+      JSON.stringify(data.education || []),
+      JSON.stringify(data.skills || []),
+      JSON.stringify(data.projects || []),
+      JSON.stringify(data.certifications || []),
+      JSON.stringify(data.achievements || []),
+      JSON.stringify(data.tools || []),
+      JSON.stringify(data.hobbies || []),
+    ]
   );
 }
 
-async function getMessages(resumeRequestId) {
+// ─── Message helpers ───────────────────────────────────────────────────────
+
+async function addMessage(resumeRequestId, direction, text, messageType) {
+  await pool.query(
+    'INSERT INTO messages (resume_request_id, direction, message_type, message_text) VALUES ($1, $2, $3, $4)',
+    [resumeRequestId, direction, messageType || 'conversation', text]
+  );
+}
+
+async function getConversationMessages(resumeRequestId) {
   const result = await pool.query(
-    'SELECT role, message_text FROM conversation_messages WHERE resume_request_id = $1 ORDER BY created_at ASC',
+    `SELECT direction, message_text FROM messages
+     WHERE resume_request_id = $1 AND message_type = 'conversation'
+     ORDER BY created_at ASC`,
     [resumeRequestId]
   );
-  return result.rows.map(r => ({ role: r.role, content: r.message_text }));
+  return result.rows.map(r => ({
+    role: r.direction === 'incoming' ? 'user' : 'assistant',
+    content: r.message_text,
+  }));
 }
 
 module.exports = {
   pool,
   initDb,
   findOrCreateUser,
+  resetDailyLimitsIfNeeded,
+  incrementMessageCount,
+  incrementResumeCount,
+  getUserLimits,
   getActiveResumeRequest,
   createResumeRequest,
   updateResumeRequestStatus,
-  upsertResumeSection,
+  updateResumeRequestFlow,
   getResumeData,
-  saveFullResumeData,
+  saveResumeData,
   addMessage,
-  getMessages,
+  getConversationMessages,
 };
