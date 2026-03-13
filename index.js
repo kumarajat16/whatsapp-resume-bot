@@ -503,6 +503,9 @@ h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</st
 if (RAZORPAY_ENABLED) {
   app.use('/razorpay-webhook', express.json());
   app.post('/razorpay-webhook', async (req, res) => {
+    console.log('RAZORPAY WEBHOOK RECEIVED');
+    console.log('Event:', req.body.event);
+    console.log('Payload:', JSON.stringify(req.body));
     try {
       const event = req.body.event;
       let notes, paymentLinkId, paymentId;
@@ -539,6 +542,7 @@ if (RAZORPAY_ENABLED) {
         }
 
         await db.updateResumeRequestStatus(resumeRequestId, 'paid');
+        console.log('Payment confirmed. Generating resume for:', phone);
         processFullResume(phone, resumeRequestId).catch(err => {
           console.error('Post-payment resume generation error:', err);
         });
@@ -547,7 +551,7 @@ if (RAZORPAY_ENABLED) {
       res.json({ status: 'ok' });
     } catch (err) {
       console.error('Razorpay webhook error:', err);
-      res.status(500).json({ error: 'webhook error' });
+      res.json({ status: 'ok' });
     }
   });
 }
