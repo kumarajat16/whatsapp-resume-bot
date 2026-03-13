@@ -56,6 +56,7 @@ function storeTempFile(filePath, filename) {
 
 async function sendWhatsApp(to, body) {
   const truncated = body.length > 1200 ? body.slice(0, 1197) + '...' : body;
+  console.log('[OUT-ASYNC]', to, '|', truncated.slice(0, 120));
   await twilioClient.messages.create({
     from: process.env.TWILIO_WHATSAPP_FROM,
     to,
@@ -66,6 +67,7 @@ async function sendWhatsApp(to, body) {
 function sendTwiml(res, text) {
   const resp = new MessagingResponse();
   const truncated = text.length > 1200 ? text.slice(0, 1197) + '...' : text;
+  console.log('[OUT-TWIML]', truncated.slice(0, 120));
   resp.message(truncated);
   res.type('text/xml');
   res.send(resp.toString());
@@ -559,42 +561,51 @@ if (RAZORPAY_ENABLED) {
 // ─── WhatsApp Webhook ────────────────────────────────────────────────────────
 
 app.post('/whatsapp', async (req, res) => {
-  const incomingMsg = (req.body.Body || '').trim();
-  const from = req.body.From || 'unknown';
-  const numMedia = parseInt(req.body.NumMedia || '0', 10);
-  const mediaUrl = req.body.MediaUrl0 || null;
-  const mediaContentType = req.body.MediaContentType0 || '';
-
-  console.log('From:', from, 'Msg:', incomingMsg, 'Media:', numMedia);
-
-  const user = await db.findOrCreateUser(from);
-  await db.resetDailyLimitsIfNeeded(user.id);
-
-  // Rate limit check
-  const limits = await db.getUserLimits(user.id);
-  if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
-    sendTwiml(res, 'System usage limit reached. Please try again tomorrow.');
-    return;
-  }
-  await db.incrementMessageCount(user.id);
-
-  // Media upload — immediate ack + background processing
-  if (numMedia > 0 && mediaUrl) {
-    sendTwiml(res, 'Great! I received your resume. Let me read it carefully.');
-    processMediaUpload(from, user.id, mediaUrl, mediaContentType).catch(err => {
-      console.error('Media processing error:', err);
-      sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
-    });
-    return;
-  }
-
-  // Text message
   try {
-    const reply = await handleMessage(from, user, incomingMsg);
-    sendTwiml(res, reply);
+    const incomingMsg = (req.body.Body || '').trim();
+    const from = req.body.From || 'unknown';
+    const numMedia = parseInt(req.body.NumMedia || '0', 10);
+    const mediaUrl = req.body.MediaUrl0 || null;
+    const mediaContentType = req.body.MediaContentType0 || '';
+
+    console.log('[IN]', from, '|', numMedia > 0 ? `[MEDIA:${mediaContentType}]` : incomingMsg);
+
+    const user = await db.findOrCreateUser(from);
+    await db.resetDailyLimitsIfNeeded(user.id);
+
+    // Rate limit check
+    const limits = await db.getUserLimits(user.id);
+    if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
+      sendTwiml(res, 'System usage limit reached. Please try again tomorrow.');
+      return;
+    }
+    await db.incrementMessageCount(user.id);
+
+    // Media upload — immediate ack + background processing
+    if (numMedia > 0 && mediaUrl) {
+      sendTwiml(res, 'Great! I received your resume. Let me read it carefully.');
+      processMediaUpload(from, user.id, mediaUrl, mediaContentType).catch(err => {
+        console.error('Media processing error:', err);
+        sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
+      });
+      return;
+    }
+
+    // Text message
+    try {
+      const reply = await handleMessage(from, user, incomingMsg);
+      sendTwiml(res, reply);
+    } catch (err) {
+      console.error('Error handling message:', err);
+      sendTwiml(res, 'Something went wrong. Please try again.');
+    }
   } catch (err) {
-    console.error('Error handling message:', err);
-    sendTwiml(res, 'Something went wrong. Please try again.');
+    console.error('WHATSAPP HANDLER CRASH:', err);
+    try {
+      sendTwiml(res, 'Something went wrong. Please try again.');
+    } catch (_) {
+      if (!res.headersSent) res.status(200).type('text/xml').send('<Response></Response>');
+    }
   }
 });
 
@@ -1627,6 +1638,16 @@ async function start() {
     console.log('BASE_URL:', process.env.BASE_URL || 'NOT SET');
   });
 }
+
+// ─── Global error handlers (prevent process crash) ──────────────────────────
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
 
 start().catch(err => {
   console.error('Failed to start:', err);
