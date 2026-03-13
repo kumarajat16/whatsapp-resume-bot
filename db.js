@@ -20,6 +20,7 @@ async function initDb() {
   `);
   if (oldSchema.rows.length > 0) {
     console.log('Migrating from old schema...');
+    await pool.query('DROP TABLE IF EXISTS payments CASCADE');
     await pool.query('DROP TABLE IF EXISTS conversation_messages CASCADE');
     await pool.query('DROP TABLE IF EXISTS resume_data CASCADE');
     await pool.query('DROP TABLE IF EXISTS resume_requests CASCADE');
@@ -66,6 +67,7 @@ async function initDb() {
       achievements JSONB DEFAULT '[]',
       tools JSONB DEFAULT '[]',
       hobbies JSONB DEFAULT '[]',
+      languages JSONB DEFAULT '[]',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -78,6 +80,17 @@ async function initDb() {
       message_text TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS payments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      resume_request_id UUID REFERENCES resume_requests(id) ON DELETE CASCADE,
+      razorpay_link_id TEXT,
+      razorpay_payment_id TEXT,
+      amount INT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'created',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
 
   // Add new columns if they don't exist (for existing deployments)
@@ -89,6 +102,21 @@ async function initDb() {
   await addCol('headline', 'TEXT');
   await addCol('target_role', 'TEXT');
   await addCol('leadership', "JSONB DEFAULT '[]'");
+  await addCol('languages', "JSONB DEFAULT '[]'");
+
+  // Create payments table for existing deployments
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      resume_request_id UUID REFERENCES resume_requests(id) ON DELETE CASCADE,
+      razorpay_link_id TEXT,
+      razorpay_payment_id TEXT,
+      amount INT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'created',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -184,8 +212,8 @@ async function getResumeData(resumeRequestId) {
 
 async function saveResumeData(resumeRequestId, data) {
   await pool.query(
-    `INSERT INTO resume_data (resume_request_id, name, headline, email, phone, location, summary, target_role, experience, education, skills, projects, leadership, certifications, achievements, tools, hobbies)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+    `INSERT INTO resume_data (resume_request_id, name, headline, email, phone, location, summary, target_role, experience, education, skills, projects, leadership, certifications, achievements, tools, hobbies, languages)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
      ON CONFLICT (resume_request_id)
      DO UPDATE SET
        name = COALESCE(NULLIF($2, ''), resume_data.name),
@@ -204,6 +232,7 @@ async function saveResumeData(resumeRequestId, data) {
        achievements = CASE WHEN $15::jsonb = '[]'::jsonb THEN resume_data.achievements ELSE $15::jsonb END,
        tools = CASE WHEN $16::jsonb = '[]'::jsonb THEN resume_data.tools ELSE $16::jsonb END,
        hobbies = CASE WHEN $17::jsonb = '[]'::jsonb THEN resume_data.hobbies ELSE $17::jsonb END,
+       languages = CASE WHEN $18::jsonb = '[]'::jsonb THEN resume_data.languages ELSE $18::jsonb END,
        updated_at = NOW()`,
     [
       resumeRequestId,
@@ -223,6 +252,7 @@ async function saveResumeData(resumeRequestId, data) {
       JSON.stringify(data.achievements || []),
       JSON.stringify(data.tools || []),
       JSON.stringify(data.hobbies || []),
+      JSON.stringify(data.languages || []),
     ]
   );
 }
@@ -249,6 +279,31 @@ async function getConversationMessages(resumeRequestId) {
   }));
 }
 
+// ─── Payment helpers ──────────────────────────────────────────────────────
+
+async function createPayment(resumeRequestId, razorpayLinkId, amount) {
+  const result = await pool.query(
+    'INSERT INTO payments (resume_request_id, razorpay_link_id, amount) VALUES ($1, $2, $3) RETURNING *',
+    [resumeRequestId, razorpayLinkId, amount]
+  );
+  return result.rows[0];
+}
+
+async function updatePaymentByLinkId(linkId, paymentId, status) {
+  await pool.query(
+    'UPDATE payments SET razorpay_payment_id = $1, status = $2, updated_at = NOW() WHERE razorpay_link_id = $3',
+    [paymentId, status, linkId]
+  );
+}
+
+async function getPaymentByResumeRequest(resumeRequestId) {
+  const result = await pool.query(
+    'SELECT * FROM payments WHERE resume_request_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [resumeRequestId]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   pool,
   initDb,
@@ -265,4 +320,7 @@ module.exports = {
   saveResumeData,
   addMessage,
   getConversationMessages,
+  createPayment,
+  updatePaymentByLinkId,
+  getPaymentByResumeRequest,
 };
