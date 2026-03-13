@@ -64,15 +64,6 @@ async function sendWhatsApp(to, body) {
   });
 }
 
-function sendTwiml(res, text) {
-  const resp = new MessagingResponse();
-  const truncated = text.length > 1200 ? text.slice(0, 1197) + '...' : text;
-  console.log('[OUT-TWIML]', truncated.slice(0, 120));
-  resp.message(truncated);
-  res.type('text/xml');
-  res.send(resp.toString());
-}
-
 // ─── Progress messages (no AI cost) ──────────────────────────────────────────
 
 const PROGRESS_MESSAGES = [
@@ -561,6 +552,16 @@ if (RAZORPAY_ENABLED) {
 // ─── WhatsApp Webhook ────────────────────────────────────────────────────────
 
 app.post('/whatsapp', async (req, res) => {
+  // Always ack Twilio immediately with empty TwiML to prevent timeouts.
+  // Actual replies are sent async via Twilio REST API.
+  try {
+    const resp = new MessagingResponse();
+    res.type('text/xml').send(resp.toString());
+  } catch (_) {
+    if (!res.headersSent) res.status(200).end();
+  }
+
+  // Process message in background
   try {
     const incomingMsg = (req.body.Body || '').trim();
     const from = req.body.From || 'unknown';
@@ -576,15 +577,15 @@ app.post('/whatsapp', async (req, res) => {
     // Rate limit check
     const limits = await db.getUserLimits(user.id);
     if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
-      sendTwiml(res, 'System usage limit reached. Please try again tomorrow.');
+      await sendWhatsApp(from, 'System usage limit reached. Please try again tomorrow.');
       return;
     }
     await db.incrementMessageCount(user.id);
 
-    // Media upload — immediate ack + background processing
+    // Media upload
     if (numMedia > 0 && mediaUrl) {
-      sendTwiml(res, 'Great! I received your resume. Let me read it carefully.');
-      processMediaUpload(from, user.id, mediaUrl, mediaContentType).catch(err => {
+      await sendWhatsApp(from, 'Great! I received your resume. Let me read it carefully.');
+      await processMediaUpload(from, user.id, mediaUrl, mediaContentType).catch(err => {
         console.error('Media processing error:', err);
         sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
       });
@@ -592,19 +593,15 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     // Text message
-    try {
-      const reply = await handleMessage(from, user, incomingMsg);
-      sendTwiml(res, reply);
-    } catch (err) {
-      console.error('Error handling message:', err);
-      sendTwiml(res, 'Something went wrong. Please try again.');
-    }
+    const reply = await handleMessage(from, user, incomingMsg);
+    await sendWhatsApp(from, reply);
   } catch (err) {
-    console.error('WHATSAPP HANDLER CRASH:', err);
+    console.error('WHATSAPP HANDLER ERROR:', err);
     try {
-      sendTwiml(res, 'Something went wrong. Please try again.');
-    } catch (_) {
-      if (!res.headersSent) res.status(200).type('text/xml').send('<Response></Response>');
+      const from = req.body.From || 'unknown';
+      await sendWhatsApp(from, 'Something went wrong. Please try again.');
+    } catch (sendErr) {
+      console.error('Failed to send error message:', sendErr);
     }
   }
 });
@@ -1647,6 +1644,14 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED REJECTION:', reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received — shutting down gracefully');
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received — shutting down gracefully');
 });
 
 start().catch(err => {
