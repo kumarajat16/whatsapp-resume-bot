@@ -1,5 +1,4 @@
 const express = require('express');
-const { twiml: { MessagingResponse } } = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, TabStopType } = require('docx');
 const PDFDocument = require('pdfkit');
@@ -15,12 +14,6 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-const twilio = require('twilio');
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -52,16 +45,30 @@ function storeTempFile(filePath, filename) {
   return token;
 }
 
-// ─── Twilio helpers ──────────────────────────────────────────────────────────
+// ─── Meta WhatsApp Cloud API helper ──────────────────────────────────────────
+
+const WA_API_URL = `https://graph.facebook.com/v22.0/${process.env.WA_PHONE_NUMBER_ID}/messages`;
 
 async function sendWhatsApp(to, body) {
   const truncated = body.length > 1200 ? body.slice(0, 1197) + '...' : body;
-  console.log('[OUT-ASYNC]', to, '|', truncated.slice(0, 120));
-  await twilioClient.messages.create({
-    from: process.env.TWILIO_WHATSAPP_FROM,
-    to,
-    body: truncated,
+  console.log('[OUT]', to, '|', truncated.slice(0, 120));
+  const res = await fetch(WA_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: truncated },
+    }),
   });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[WA API ERROR]', res.status, err);
+  }
 }
 
 // ─── Progress messages (no AI cost) ──────────────────────────────────────────
@@ -465,7 +472,8 @@ app.get('/health', (req, res) => {
   res.json({
     service: 'ResumeWala.ai',
     ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
-    TWILIO_ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
+    WA_PHONE_NUMBER_ID: !!process.env.WA_PHONE_NUMBER_ID,
+    WA_ACCESS_TOKEN: !!process.env.WA_ACCESS_TOKEN,
     DATABASE_URL: !!process.env.DATABASE_URL,
     RAZORPAY: RAZORPAY_ENABLED,
     BASE_URL: process.env.BASE_URL || 'NOT SET',
@@ -489,9 +497,106 @@ app.get("/webhook", (req, res) => {
 app.use("/webhook", express.json());
 
 app.post("/webhook", (req, res) => {
-  console.log("Webhook event:", JSON.stringify(req.body, null, 2));
+  // Always respond 200 immediately so Meta doesn't retry
   res.sendStatus(200);
+
+  // Process in background
+  try {
+    const entry = req.body?.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+
+    // Log for debugging
+    console.log("[WEBHOOK]", JSON.stringify(req.body, null, 2));
+
+    // Only process actual incoming messages (not status updates)
+    const message = value?.messages?.[0];
+    if (!message) return;
+
+    const from = message.from; // phone number without +
+    const msgType = message.type;
+
+    if (msgType === 'text') {
+      const incomingMsg = message.text?.body || '';
+      console.log('[IN]', from, '|', incomingMsg);
+      handleIncomingMessage(from, incomingMsg).catch(err => {
+        console.error('MESSAGE HANDLER ERROR:', err);
+      });
+    } else if (msgType === 'document' || msgType === 'image') {
+      // Media messages (PDF/docx uploads)
+      const mediaId = message.document?.id || message.image?.id;
+      const mimeType = message.document?.mime_type || message.image?.mime_type || '';
+      const caption = message.document?.caption || message.image?.caption || '';
+      console.log('[IN]', from, '| [MEDIA:', mimeType, ']');
+      handleMediaMessage(from, mediaId, mimeType, caption).catch(err => {
+        console.error('MEDIA HANDLER ERROR:', err);
+      });
+    } else {
+      console.log('[IN]', from, '| [UNSUPPORTED:', msgType, ']');
+    }
+  } catch (err) {
+    console.error('WEBHOOK PROCESSING ERROR:', err);
+  }
 });
+
+// ─── Incoming message dispatcher ────────────────────────────────────────────
+
+async function handleIncomingMessage(from, incomingMsg) {
+  try {
+    const user = await db.findOrCreateUser(from);
+    await db.resetDailyLimitsIfNeeded(user.id);
+
+    const limits = await db.getUserLimits(user.id);
+    if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
+      await sendWhatsApp(from, 'System usage limit reached. Please try again tomorrow.');
+      return;
+    }
+    await db.incrementMessageCount(user.id);
+
+    const reply = await handleMessage(from, user, incomingMsg);
+    await sendWhatsApp(from, reply);
+  } catch (err) {
+    console.error('HANDLE INCOMING ERROR:', err);
+    await sendWhatsApp(from, 'Something went wrong. Please try again.').catch(console.error);
+  }
+}
+
+async function handleMediaMessage(from, mediaId, mimeType, caption) {
+  try {
+    const user = await db.findOrCreateUser(from);
+    await db.resetDailyLimitsIfNeeded(user.id);
+
+    const limits = await db.getUserLimits(user.id);
+    if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
+      await sendWhatsApp(from, 'System usage limit reached. Please try again tomorrow.');
+      return;
+    }
+    await db.incrementMessageCount(user.id);
+
+    const supportedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+
+    if (!supportedTypes.includes(mimeType)) {
+      await sendWhatsApp(from, 'I can only read PDF or Word (.docx) files. Please send one of those, or type "2" to create from scratch.');
+      return;
+    }
+
+    await sendWhatsApp(from, 'Great! I received your resume. Let me read it carefully.');
+
+    // Download media from Meta API
+    const { buffer, tmpPath } = await downloadWhatsAppMedia(mediaId, mimeType);
+
+    await processMediaUpload(from, user.id, buffer, tmpPath, mimeType).catch(err => {
+      console.error('Media processing error:', err);
+      sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
+    });
+  } catch (err) {
+    console.error('HANDLE MEDIA ERROR:', err);
+    await sendWhatsApp(from, 'Something went wrong. Please try again.').catch(console.error);
+  }
+}
 
 app.get('/resume/:token', (req, res) => {
   const entry = tempFiles.get(req.params.token);
@@ -570,62 +675,6 @@ if (RAZORPAY_ENABLED) {
   });
 }
 
-// ─── WhatsApp Webhook ────────────────────────────────────────────────────────
-
-app.post('/whatsapp', async (req, res) => {
-  // Always ack Twilio immediately with empty TwiML to prevent timeouts.
-  // Actual replies are sent async via Twilio REST API.
-  try {
-    const resp = new MessagingResponse();
-    res.type('text/xml').send(resp.toString());
-  } catch (_) {
-    if (!res.headersSent) res.status(200).end();
-  }
-
-  // Process message in background
-  try {
-    const incomingMsg = (req.body.Body || '').trim();
-    const from = req.body.From || 'unknown';
-    const numMedia = parseInt(req.body.NumMedia || '0', 10);
-    const mediaUrl = req.body.MediaUrl0 || null;
-    const mediaContentType = req.body.MediaContentType0 || '';
-
-    console.log('[IN]', from, '|', numMedia > 0 ? `[MEDIA:${mediaContentType}]` : incomingMsg);
-
-    const user = await db.findOrCreateUser(from);
-    await db.resetDailyLimitsIfNeeded(user.id);
-
-    // Rate limit check
-    const limits = await db.getUserLimits(user.id);
-    if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
-      await sendWhatsApp(from, 'System usage limit reached. Please try again tomorrow.');
-      return;
-    }
-    await db.incrementMessageCount(user.id);
-
-    // Media upload
-    if (numMedia > 0 && mediaUrl) {
-      await sendWhatsApp(from, 'Great! I received your resume. Let me read it carefully.');
-      await processMediaUpload(from, user.id, mediaUrl, mediaContentType).catch(err => {
-        console.error('Media processing error:', err);
-        sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
-      });
-      return;
-    }
-
-    // Text message
-    const reply = await handleMessage(from, user, incomingMsg);
-    await sendWhatsApp(from, reply);
-  } catch (err) {
-    console.error('WHATSAPP HANDLER ERROR:', err);
-    try {
-      const from = req.body.From || 'unknown';
-      await sendWhatsApp(from, 'Something went wrong. Please try again.');
-    } catch (sendErr) {
-      console.error('Failed to send error message:', sendErr);
-    }
-  }
-});
 
 // ─── Message handler (state machine) ─────────────────────────────────────────
 
@@ -849,17 +898,7 @@ async function processFullResume(from, resumeRequestId) {
   await sendWhatsApp(from, msg);
 }
 
-async function processMediaUpload(from, userId, mediaUrl, contentType) {
-  const supportedTypes = [
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  ];
-
-  if (!supportedTypes.includes(contentType)) {
-    await sendWhatsApp(from, 'I can only read PDF or Word (.docx) files. Please send one of those, or type "2" to create from scratch.');
-    return;
-  }
-
+async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
   // Ensure active request exists
   let resumeReq = await db.getActiveResumeRequest(userId);
   if (!resumeReq) {
@@ -869,17 +908,7 @@ async function processMediaUpload(from, userId, mediaUrl, contentType) {
     await db.updateResumeRequestFlow(resumeReq.id, 'improve');
   }
 
-  // Step 1: Download file
-  let buffer, tmpPath;
-  try {
-    ({ buffer, tmpPath } = await downloadTwilioMedia(mediaUrl, contentType));
-  } catch (err) {
-    console.error('Download error:', err.message);
-    await sendWhatsApp(from, 'Could not download your file. Please try again.');
-    return;
-  }
-
-  // Step 2: Extract text
+  // Extract text
   let text = '';
   try {
     if (contentType === 'application/pdf') {
@@ -1006,26 +1035,27 @@ async function extractAndSaveFromConversation(resumeRequestId) {
   }
 }
 
-// ─── Download Twilio media ───────────────────────────────────────────────────
+// ─── Download WhatsApp media (Meta Cloud API) ───────────────────────────────
 
-async function downloadTwilioMedia(mediaUrl, contentType) {
-  const credentials = Buffer.from(
-    process.env.TWILIO_ACCOUNT_SID + ':' + process.env.TWILIO_AUTH_TOKEN
-  ).toString('base64');
-
-  const fetchWithAuth = () => fetch(mediaUrl, {
-    headers: { Authorization: 'Basic ' + credentials },
+async function downloadWhatsAppMedia(mediaId, contentType) {
+  // Step 1: Get media URL from Meta
+  const urlRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+    headers: { 'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}` },
   });
-
-  let response = await fetchWithAuth();
-  if (!response.ok) {
-    response = await fetchWithAuth();
+  if (!urlRes.ok) {
+    throw new Error('Media URL fetch failed: ' + urlRes.status);
   }
-  if (!response.ok) {
-    throw new Error('Media download failed: ' + response.status);
+  const { url } = await urlRes.json();
+
+  // Step 2: Download the actual file
+  const mediaRes = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}` },
+  });
+  if (!mediaRes.ok) {
+    throw new Error('Media download failed: ' + mediaRes.status);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
+  const arrayBuffer = await mediaRes.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
   const ext = contentType === 'application/pdf' ? 'pdf' : 'docx';
