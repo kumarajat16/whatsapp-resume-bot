@@ -1115,203 +1115,218 @@ async function createPaymentLink(from, resumeReq) {
   }
 }
 
-// ─── DOCX generation (professional ATS-compatible template) ──────────────────
+// ─── Shared formatting helpers ───────────────────────────────────────────────
+
+// Bold metrics: numbers, percentages, multipliers, currency
+function boldMetricRuns(text, size, font) {
+  const parts = text.split(/((?:[₹$])\s*\d+[\d,.]*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh))?|\d+[\d,.]*\s*[%xXkKmM+]*|\d{2,}[+]?)/g);
+  const runs = [];
+  for (const part of parts) {
+    if (/^(?:[₹$])\s*\d+|^\d+[\d,.]*\s*[%xXkKmM+]*$|^\d{2,}[+]?$/.test(part)) {
+      runs.push(new TextRun({ text: part, bold: true, size, font }));
+    } else {
+      runs.push(new TextRun({ text: part, size, font }));
+    }
+  }
+  return runs;
+}
+
+// Build header info line: "Designation at Company | X years exp in Domain | City"
+function buildHeaderInfo(data) {
+  const parts = [];
+  // Current designation + company from most recent experience
+  const latestExp = (data.experience || []).find(e => typeof e === 'object' && e.title);
+  if (latestExp) {
+    const desig = [latestExp.title, latestExp.company].filter(Boolean).join(' at ');
+    if (desig) parts.push(desig);
+  }
+  if (data.headline && !latestExp) parts.push(data.headline);
+  if (data.location) parts.push(data.location);
+  return parts.join('  |  ');
+}
+
+// ─── DOCX generation ─────────────────────────────────────────────────────────
 
 async function generateDocx(data) {
   const children = [];
-  const RIGHT_TAB = 10466; // A4 content width in twips (11906 - 720 - 720)
+  const RIGHT_TAB = 10466; // A4 width minus margins in twips
+  const FONT = 'Calibri';
+  const NAVY = '1F3864';
+  const GRAY = '555555';
+  const LIGHT_GRAY = '888888';
 
-  // ── Section heading with bottom border (13pt, navy, uppercase)
+  // ── Helpers ────────────────────────────────────────────────────
+
   const sectionHeading = (title) =>
     new Paragraph({
-      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 26, font: 'Calibri', color: '1F3864' })],
-      border: {
-        bottom: { color: '1F3864', space: 2, style: BorderStyle.SINGLE, size: 6 },
-      },
-      spacing: { before: 300, after: 120 },
+      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 22, font: FONT, color: NAVY })],
+      border: { bottom: { color: NAVY, space: 1, style: BorderStyle.SINGLE, size: 4 } },
+      spacing: { before: 240, after: 100 },
     });
 
-  // ── Bullet paragraph with hanging indent and bold metrics
-  const bulletParagraph = (text) => {
-    // Bold: numbers, percentages, multipliers, currency, large counts
-    const parts = text.split(/((?:[₹$])\s*\d+[\d,.]*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh))?|\d+[\d,.]*\s*[%xXkKmM+]*|\d{2,}[+]?)/g);
-    const runs = [];
-    for (const part of parts) {
-      if (/^(?:[₹$])\s*\d+|^\d+[\d,.]*\s*[%xXkKmM+]*$|^\d{2,}[+]?$/.test(part)) {
-        runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
-      } else {
-        runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
-      }
-    }
-    return new Paragraph({
-      children: [new TextRun({ text: '\u2022  ', size: 21, font: 'Calibri' }), ...runs],
-      spacing: { after: 80, line: 264 },
-      indent: { left: 360, hanging: 180 },
-    });
-  };
+  const bulletParagraph = (text) => new Paragraph({
+    children: [new TextRun({ text: '\u2022  ', size: 20, font: FONT }), ...boldMetricRuns(text, 20, FONT)],
+    spacing: { after: 40, line: 260 },
+    indent: { left: 360, hanging: 180 },
+  });
+
+  const simpleBullet = (text) => new Paragraph({
+    children: [new TextRun({ text: '\u2022  ' + text, size: 20, font: FONT })],
+    spacing: { after: 40 },
+    indent: { left: 360, hanging: 180 },
+  });
 
   // ═══ HEADER ═══════════════════════════════════════════════════
 
-  // Name (16pt bold navy, centered)
-  children.push(
-    new Paragraph({
-      children: [new TextRun({ text: (data.name || 'Resume').toUpperCase(), bold: true, size: 32, font: 'Calibri', color: '1F3864' })],
-      alignment: AlignmentType.CENTER,
+  // Name — 14pt bold navy, left aligned
+  children.push(new Paragraph({
+    children: [new TextRun({ text: (data.name || 'Resume').toUpperCase(), bold: true, size: 28, font: FONT, color: NAVY })],
+    spacing: { after: 60 },
+  }));
+
+  // Info line: designation, experience summary, city
+  const infoLine = buildHeaderInfo(data);
+  if (infoLine) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: infoLine, size: 20, font: FONT, color: GRAY })],
       spacing: { after: 40 },
-    })
-  );
-
-  // Headline (11pt, dark gray, centered)
-  if (data.headline) {
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: data.headline, size: 22, font: 'Calibri', color: '404040' })],
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 40 },
-      })
-    );
+    }));
   }
 
-  // Contact line (10pt, gray, centered)
-  const contactParts = [data.location, data.phone, data.email].filter(Boolean);
+  // Contact: phone | email
+  const contactParts = [data.phone, data.email].filter(Boolean);
   if (contactParts.length > 0) {
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: contactParts.join('  |  '), size: 20, font: 'Calibri', color: '666666' })],
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-      })
-    );
+    children.push(new Paragraph({
+      children: [new TextRun({ text: contactParts.join('  |  '), size: 19, font: FONT, color: LIGHT_GRAY })],
+      spacing: { after: 60 },
+    }));
   }
 
-  // ═══ PROFESSIONAL SUMMARY ═════════════════════════════════════
+  // Thin separator line after header
+  children.push(new Paragraph({
+    border: { bottom: { color: NAVY, space: 1, style: BorderStyle.SINGLE, size: 8 } },
+    spacing: { after: 120 },
+  }));
+
+  // ═══ 1. PROFESSIONAL SUMMARY ══════════════════════════════════
 
   if (data.summary) {
     children.push(sectionHeading('Professional Summary'));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: data.summary, size: 21, font: 'Calibri' })],
-        spacing: { after: 100, line: 276 },
-      })
-    );
+    children.push(new Paragraph({
+      children: [new TextRun({ text: data.summary, size: 20, font: FONT })],
+      spacing: { after: 60, line: 276 },
+    }));
   }
 
-  // ═══ PROFESSIONAL EXPERIENCE ══════════════════════════════════
+  // ═══ 2. SKILLS ════════════════════════════════════════════════
+
+  const skillsList = (data.skills || []).map(s => String(s)).slice(0, 12);
+  if (skillsList.length > 0) {
+    children.push(sectionHeading('Skills'));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: skillsList.join('  \u2022  '), size: 20, font: FONT })],
+      spacing: { after: 60 },
+    }));
+  }
+
+  // ═══ 3. PROFESSIONAL EXPERIENCE ═══════════════════════════════
 
   if (data.experience && data.experience.length > 0) {
     children.push(sectionHeading('Professional Experience'));
     const MAX_DETAILED = 4;
 
-    for (let i = 0; i < data.experience.length; i++) {
+    for (let i = 0; i < Math.min(data.experience.length, MAX_DETAILED); i++) {
       const exp = data.experience[i];
       if (typeof exp !== 'object') {
         children.push(bulletParagraph(String(exp)));
         continue;
       }
 
-      // Company name (bold, navy)
-      if (exp.company) {
-        children.push(
-          new Paragraph({
-            children: [new TextRun({ text: exp.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' })],
-            spacing: { before: i === 0 ? 0 : 200, after: 30 },
-          })
-        );
-      }
-
-      // Role title + Duration (right-aligned via tab stop)
+      // Role title + duration (right-aligned)
       if (exp.title) {
-        const roleChildren = [
-          new TextRun({ text: exp.title, bold: true, size: 21, font: 'Calibri' }),
-        ];
+        const roleRuns = [new TextRun({ text: exp.title, bold: true, size: 21, font: FONT })];
         if (exp.duration) {
-          roleChildren.push(new TextRun({ text: '\t' }));
-          roleChildren.push(new TextRun({ text: exp.duration, size: 20, font: 'Calibri', color: '666666' }));
+          roleRuns.push(new TextRun({ text: '\t' }));
+          roleRuns.push(new TextRun({ text: exp.duration, size: 19, font: FONT, color: LIGHT_GRAY }));
         }
-        children.push(
-          new Paragraph({
-            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
-            children: roleChildren,
-            spacing: { after: 60 },
-          })
-        );
+        children.push(new Paragraph({
+          tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+          children: roleRuns,
+          spacing: { before: i === 0 ? 0 : 180, after: 20 },
+        }));
       }
 
-      // Description (optional, italic)
-      if (exp.description) {
-        children.push(
-          new Paragraph({
-            children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
-            spacing: { after: 60 },
-          })
-        );
+      // Company name + location
+      const companyParts = [exp.company, exp.location].filter(Boolean);
+      if (companyParts.length > 0) {
+        children.push(new Paragraph({
+          children: [new TextRun({ text: companyParts.join(', '), size: 20, font: FONT, color: GRAY })],
+          spacing: { after: 40 },
+        }));
       }
 
-      // Responsibility bullets (max 10 for first 4 roles, 3 for older)
+      // Responsibility bullets (max 6 preferred, hard max 10)
       const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
         (exp.responsibilities ? [exp.responsibilities] : []);
-      const maxBullets = i < MAX_DETAILED ? 10 : 3;
-      for (const resp of responsibilities.slice(0, maxBullets)) {
+      for (const resp of responsibilities.slice(0, 10)) {
         children.push(bulletParagraph(String(resp)));
       }
     }
   }
 
-  // ═══ PROJECTS ═════════════════════════════════════════════════
-
-  if (data.projects && data.projects.length > 0) {
-    children.push(sectionHeading('Projects'));
-    for (const proj of data.projects) {
-      children.push(bulletParagraph(String(proj)));
-    }
-  }
-
-  // ═══ EDUCATION ════════════════════════════════════════════════
+  // ═══ 4. EDUCATION ═════════════════════════════════════════════
 
   if (data.education && data.education.length > 0) {
     children.push(sectionHeading('Education'));
     for (const edu of data.education) {
       if (typeof edu === 'object') {
-        const rightText = [edu.institution, edu.year].filter(Boolean).join(' | ');
-        const eduChildren = [
-          new TextRun({ text: edu.degree || '', bold: true, size: 21, font: 'Calibri' }),
-        ];
-        if (rightText) {
-          eduChildren.push(new TextRun({ text: '\t' }));
-          eduChildren.push(new TextRun({ text: rightText, size: 21, font: 'Calibri', color: '666666' }));
+        // Degree + year right-aligned
+        const degRuns = [new TextRun({ text: edu.degree || '', bold: true, size: 20, font: FONT })];
+        if (edu.year) {
+          degRuns.push(new TextRun({ text: '\t' }));
+          degRuns.push(new TextRun({ text: edu.year, size: 19, font: FONT, color: LIGHT_GRAY }));
         }
-        children.push(
-          new Paragraph({
-            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
-            children: eduChildren,
-            spacing: { before: 60, after: 80 },
-          })
-        );
+        children.push(new Paragraph({
+          tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+          children: degRuns,
+          spacing: { before: 40, after: 20 },
+        }));
+        if (edu.institution) {
+          children.push(new Paragraph({
+            children: [new TextRun({ text: edu.institution, size: 20, font: FONT, color: GRAY })],
+            spacing: { after: 60 },
+          }));
+        }
       } else {
-        children.push(
-          new Paragraph({
-            children: [new TextRun({ text: String(edu), size: 21, font: 'Calibri' })],
-            spacing: { after: 80 },
-          })
-        );
+        children.push(new Paragraph({
+          children: [new TextRun({ text: String(edu), size: 20, font: FONT })],
+          spacing: { after: 60 },
+        }));
       }
     }
   }
 
-  // ═══ KEY SKILLS (pipe-separated) ══════════════════════════════
+  // ═══ 5. CERTIFICATIONS (optional) ═════════════════════════════
 
-  const skillsList = (data.skills || []).map(s => typeof s === 'string' ? s : String(s));
-  if (skillsList.length > 0) {
-    children.push(sectionHeading('Key Skills'));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: skillsList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 100 },
-      })
-    );
+  if (data.certifications && data.certifications.length > 0) {
+    children.push(sectionHeading('Certifications'));
+    for (const cert of data.certifications) {
+      children.push(simpleBullet(String(cert)));
+    }
   }
 
-  // ═══ ACHIEVEMENTS ═════════════════════════════════════════════
+  // ═══ 6. TOOLS & TECHNOLOGIES (optional) ═══════════════════════
+
+  const toolsList = (data.tools || []).map(t => String(t));
+  if (toolsList.length > 0) {
+    children.push(sectionHeading('Tools & Technologies'));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: toolsList.join('  \u2022  '), size: 20, font: FONT })],
+      spacing: { after: 60 },
+    }));
+  }
+
+  // ═══ 7. ACHIEVEMENTS (optional) ═══════════════════════════════
 
   if (data.achievements && data.achievements.length > 0) {
     children.push(sectionHeading('Achievements'));
@@ -1320,85 +1335,43 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══ CERTIFICATIONS ═══════════════════════════════════════════
+  // ═══ PROJECTS (optional) ══════════════════════════════════════
 
-  if (data.certifications && data.certifications.length > 0) {
-    children.push(sectionHeading('Certifications'));
-    for (const cert of data.certifications) {
-      children.push(bulletParagraph(String(cert)));
+  if (data.projects && data.projects.length > 0) {
+    children.push(sectionHeading('Projects'));
+    for (const proj of data.projects) {
+      children.push(bulletParagraph(String(proj)));
     }
   }
 
-  // ═══ TOOLS & TECHNOLOGIES (pipe-separated) ════════════════════
-
-  const toolsList = (data.tools || []).map(t => typeof t === 'string' ? t : String(t));
-  if (toolsList.length > 0) {
-    children.push(sectionHeading('Tools & Technologies'));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: toolsList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 100 },
-      })
-    );
-  }
-
-  // ═══ LEADERSHIP & EXTRACURRICULAR ═════════════════════════════
+  // ═══ LEADERSHIP (optional) ════════════════════════════════════
 
   if (data.leadership && data.leadership.length > 0) {
-    children.push(sectionHeading('Leadership & Extracurricular'));
+    children.push(sectionHeading('Leadership'));
     for (const item of data.leadership) {
       if (typeof item === 'object' && item.title) {
-        const headerRuns = [
-          new TextRun({ text: item.title, bold: true, size: 21, font: 'Calibri' }),
-        ];
+        const headerRuns = [new TextRun({ text: item.title, bold: true, size: 20, font: FONT })];
         if (item.company) {
-          headerRuns.push(new TextRun({ text: ' | ', size: 21, font: 'Calibri', color: '666666' }));
-          headerRuns.push(new TextRun({ text: item.company, size: 21, font: 'Calibri', color: '1F3864', bold: true }));
+          headerRuns.push(new TextRun({ text: ', ' + item.company, size: 20, font: FONT, color: GRAY }));
         }
         if (item.duration) {
           headerRuns.push(new TextRun({ text: '\t' }));
-          headerRuns.push(new TextRun({ text: item.duration, size: 20, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: item.duration, size: 19, font: FONT, color: LIGHT_GRAY }));
         }
-        children.push(
-          new Paragraph({
-            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
-            children: headerRuns,
-            spacing: { before: 120, after: 40 },
-          })
-        );
+        children.push(new Paragraph({
+          tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+          children: headerRuns,
+          spacing: { before: 80, after: 40 },
+        }));
         const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
-        for (const r of resps) {
-          children.push(bulletParagraph(String(r)));
-        }
+        for (const r of resps) { children.push(bulletParagraph(String(r))); }
       } else {
-        children.push(bulletParagraph(String(item)));
+        children.push(simpleBullet(String(item)));
       }
     }
   }
 
-  // ═══ LANGUAGES (pipe-separated) ═══════════════════════════════
-
-  const langList = (data.languages || []).map(l => typeof l === 'string' ? l : String(l));
-  if (langList.length > 0) {
-    children.push(sectionHeading('Languages'));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: langList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 100 },
-      })
-    );
-  }
-
-  // ═══ HOBBIES ══════════════════════════════════════════════════
-
-  if (data.hobbies && data.hobbies.length > 0) {
-    children.push(sectionHeading('Hobbies & Interests'));
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ text: data.hobbies.map(h => typeof h === 'string' ? h : String(h)).join('  |  '), size: 21, font: 'Calibri' })],
-      })
-    );
-  }
+  // ═══ Build document ═══════════════════════════════════════════
 
   const doc = new Document({
     sections: [{
@@ -1436,14 +1409,15 @@ async function generatePdf(data) {
     doc.pipe(stream);
 
     const NAVY = '#1F3864';
-    const GRAY = '#666666';
-    const DARK_GRAY = '#404040';
+    const GRAY = '#555555';
+    const LIGHT_GRAY = '#888888';
     const BLACK = '#000000';
-    const PAGE_WIDTH = 495; // A4 content: 595 - 50 - 50
+    const PAGE_WIDTH = 495;
     const LEFT = 50;
     const RIGHT_EDGE = LEFT + PAGE_WIDTH;
 
-    // Helper: right-aligned pair on same line
+    // ── Helpers ──────────────────────────────────────────────────
+
     const rightAlignedLine = (leftTxt, lFont, lSize, lColor, rightTxt, rFont, rSize, rColor) => {
       const startY = doc.y;
       doc.font(rFont).fontSize(rSize);
@@ -1456,79 +1430,89 @@ async function generatePdf(data) {
       doc.y = Math.max(afterLeftY, doc.y);
     };
 
-    // Helper: section heading with line
     const pdfSectionHeading = (title) => {
-      doc.moveDown(0.4);
-      doc.fontSize(11).fillColor(NAVY).font('Helvetica-Bold')
+      doc.moveDown(0.5);
+      doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold')
         .text(title.toUpperCase());
-      const y = doc.y;
+      const y = doc.y + 1;
       doc.moveTo(LEFT, y).lineTo(RIGHT_EDGE, y)
-        .strokeColor(NAVY).lineWidth(0.8).stroke();
-      doc.moveDown(0.15);
+        .strokeColor(NAVY).lineWidth(0.6).stroke();
+      doc.moveDown(0.2);
     };
 
-    // Helper: bullet with hanging indent
     const pdfBullet = (text) => {
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text('\u2022  ' + text, LEFT + 15, doc.y, {
-          width: PAGE_WIDTH - 15,
-          lineGap: 2,
+      doc.fontSize(9.5).fillColor(BLACK).font('Helvetica')
+        .text('\u2022  ' + text, LEFT + 12, doc.y, {
+          width: PAGE_WIDTH - 12,
+          lineGap: 1.5,
         });
     };
 
     // ═══ HEADER ═════════════════════════════════════════════════
 
-    doc.fontSize(16).fillColor(NAVY).font('Helvetica-Bold')
-      .text((data.name || 'Resume').toUpperCase(), { align: 'center' });
+    // Name — 14pt bold navy, left aligned
+    doc.fontSize(14).fillColor(NAVY).font('Helvetica-Bold')
+      .text((data.name || 'Resume').toUpperCase());
 
-    if (data.headline) {
-      doc.fontSize(10.5).fillColor(DARK_GRAY).font('Helvetica')
-        .text(data.headline, { align: 'center' });
+    // Info line
+    const infoLine = buildHeaderInfo(data);
+    if (infoLine) {
+      doc.fontSize(9.5).fillColor(GRAY).font('Helvetica')
+        .text(infoLine);
     }
 
-    const contactParts = [data.location, data.phone, data.email].filter(Boolean);
+    // Contact
+    const contactParts = [data.phone, data.email].filter(Boolean);
     if (contactParts.length > 0) {
-      doc.fontSize(9).fillColor(GRAY).font('Helvetica')
-        .text(contactParts.join('  |  '), { align: 'center' });
+      doc.fontSize(9).fillColor(LIGHT_GRAY).font('Helvetica')
+        .text(contactParts.join('  |  '));
     }
 
-    doc.moveDown(0.5);
+    // Header separator
+    doc.moveDown(0.3);
+    const sepY = doc.y;
+    doc.moveTo(LEFT, sepY).lineTo(RIGHT_EDGE, sepY)
+      .strokeColor(NAVY).lineWidth(1).stroke();
+    doc.moveDown(0.15);
 
-    // ═══ PROFESSIONAL SUMMARY ═══════════════════════════════════
+    // ═══ 1. PROFESSIONAL SUMMARY ════════════════════════════════
 
     if (data.summary) {
       pdfSectionHeading('Professional Summary');
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(data.summary, { lineGap: 3 });
+      doc.fontSize(9.5).fillColor(BLACK).font('Helvetica')
+        .text(data.summary, { lineGap: 2.5 });
     }
 
-    // ═══ PROFESSIONAL EXPERIENCE ════════════════════════════════
+    // ═══ 2. SKILLS ══════════════════════════════════════════════
+
+    const pdfSkills = (data.skills || []).map(s => String(s)).slice(0, 12);
+    if (pdfSkills.length > 0) {
+      pdfSectionHeading('Skills');
+      doc.fontSize(9.5).fillColor(BLACK).font('Helvetica')
+        .text(pdfSkills.join('  \u2022  '), { lineGap: 2 });
+    }
+
+    // ═══ 3. PROFESSIONAL EXPERIENCE ═════════════════════════════
 
     if (data.experience && data.experience.length > 0) {
       pdfSectionHeading('Professional Experience');
       const MAX_DETAILED = 4;
 
-      for (let i = 0; i < data.experience.length; i++) {
+      for (let i = 0; i < Math.min(data.experience.length, MAX_DETAILED); i++) {
         const exp = data.experience[i];
         if (typeof exp !== 'object') {
           pdfBullet(String(exp));
           continue;
         }
 
-        if (i > 0) doc.moveDown(0.3);
+        if (i > 0) doc.moveDown(0.35);
 
-        // Company name (bold, navy)
-        if (exp.company) {
-          doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold')
-            .text(exp.company);
-        }
-
-        // Role + Duration (right-aligned)
+        // Role title + duration right-aligned
         if (exp.title) {
           if (exp.duration) {
             rightAlignedLine(
               exp.title, 'Helvetica-Bold', 10, BLACK,
-              exp.duration, 'Helvetica', 9.5, GRAY
+              exp.duration, 'Helvetica', 9, LIGHT_GRAY
             );
           } else {
             doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold')
@@ -1536,75 +1520,53 @@ async function generatePdf(data) {
           }
         }
 
-        // Description (optional, italic)
-        if (exp.description) {
-          doc.fontSize(9).fillColor(GRAY).font('Helvetica-Oblique')
-            .text(exp.description);
+        // Company + location
+        const companyParts = [exp.company, exp.location].filter(Boolean);
+        if (companyParts.length > 0) {
+          doc.fontSize(9.5).fillColor(GRAY).font('Helvetica')
+            .text(companyParts.join(', '));
         }
 
-        // Bullets (max 10 for first 4 roles, 3 for older)
+        doc.moveDown(0.1);
+
+        // Bullets (max 10)
         const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
           (exp.responsibilities ? [exp.responsibilities] : []);
-        const maxBullets = i < MAX_DETAILED ? 10 : 3;
-        for (const resp of responsibilities.slice(0, maxBullets)) {
+        for (const resp of responsibilities.slice(0, 10)) {
           pdfBullet(String(resp));
         }
       }
     }
 
-    // ═══ PROJECTS ═══════════════════════════════════════════════
-
-    if (data.projects && data.projects.length > 0) {
-      pdfSectionHeading('Projects');
-      for (const proj of data.projects) {
-        pdfBullet(String(proj));
-      }
-    }
-
-    // ═══ EDUCATION ══════════════════════════════════════════════
+    // ═══ 4. EDUCATION ═══════════════════════════════════════════
 
     if (data.education && data.education.length > 0) {
       pdfSectionHeading('Education');
       for (const edu of data.education) {
         if (typeof edu === 'object') {
-          const rightText = [edu.institution, edu.year].filter(Boolean).join(' | ');
-          if (rightText) {
+          if (edu.year) {
             rightAlignedLine(
-              edu.degree || '', 'Helvetica-Bold', 10, BLACK,
-              rightText, 'Helvetica', 10, GRAY
+              edu.degree || '', 'Helvetica-Bold', 9.5, BLACK,
+              edu.year, 'Helvetica', 9, LIGHT_GRAY
             );
           } else {
-            doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold')
+            doc.fontSize(9.5).fillColor(BLACK).font('Helvetica-Bold')
               .text(edu.degree || '');
           }
-          doc.moveDown(0.1);
+          if (edu.institution) {
+            doc.fontSize(9.5).fillColor(GRAY).font('Helvetica')
+              .text(edu.institution);
+          }
+          doc.moveDown(0.15);
         } else {
-          doc.fontSize(10).fillColor(BLACK).font('Helvetica')
+          doc.fontSize(9.5).fillColor(BLACK).font('Helvetica')
             .text(String(edu));
-          doc.moveDown(0.1);
+          doc.moveDown(0.15);
         }
       }
     }
 
-    // ═══ KEY SKILLS ═════════════════════════════════════════════
-
-    const pdfSkills = (data.skills || []).map(s => typeof s === 'string' ? s : String(s));
-    if (pdfSkills.length > 0) {
-      pdfSectionHeading('Key Skills');
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfSkills.join('  |  '), { lineGap: 2 });
-    }
-
-    // ═══ ACHIEVEMENTS ═══════════════════════════════════════════
-
-    if (data.achievements && data.achievements.length > 0) {
-      pdfSectionHeading('Achievements');
-      for (const ach of data.achievements) {
-        pdfBullet(String(ach));
-      }
-    }
-
-    // ═══ CERTIFICATIONS ═════════════════════════════════════════
+    // ═══ 5. CERTIFICATIONS (optional) ═══════════════════════════
 
     if (data.certifications && data.certifications.length > 0) {
       pdfSectionHeading('Certifications');
@@ -1613,58 +1575,52 @@ async function generatePdf(data) {
       }
     }
 
-    // ═══ TOOLS & TECHNOLOGIES ═══════════════════════════════════
+    // ═══ 6. TOOLS & TECHNOLOGIES (optional) ═════════════════════
 
-    const pdfTools = (data.tools || []).map(t => typeof t === 'string' ? t : String(t));
+    const pdfTools = (data.tools || []).map(t => String(t));
     if (pdfTools.length > 0) {
       pdfSectionHeading('Tools & Technologies');
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfTools.join('  |  '), { lineGap: 2 });
+      doc.fontSize(9.5).fillColor(BLACK).font('Helvetica')
+        .text(pdfTools.join('  \u2022  '), { lineGap: 2 });
     }
 
-    // ═══ LEADERSHIP & EXTRACURRICULAR ═══════════════════════════
+    // ═══ 7. ACHIEVEMENTS (optional) ═════════════════════════════
+
+    if (data.achievements && data.achievements.length > 0) {
+      pdfSectionHeading('Achievements');
+      for (const ach of data.achievements) {
+        pdfBullet(String(ach));
+      }
+    }
+
+    // ═══ PROJECTS (optional) ════════════════════════════════════
+
+    if (data.projects && data.projects.length > 0) {
+      pdfSectionHeading('Projects');
+      for (const proj of data.projects) {
+        pdfBullet(String(proj));
+      }
+    }
+
+    // ═══ LEADERSHIP (optional) ══════════════════════════════════
 
     if (data.leadership && data.leadership.length > 0) {
-      pdfSectionHeading('Leadership & Extracurricular');
+      pdfSectionHeading('Leadership');
       for (const item of data.leadership) {
         if (typeof item === 'object' && item.title) {
-          const leftTxt = [item.title, item.company].filter(Boolean).join(' | ');
+          const leftTxt = [item.title, item.company].filter(Boolean).join(', ');
           if (item.duration) {
-            rightAlignedLine(
-              leftTxt, 'Helvetica-Bold', 10, NAVY,
-              item.duration, 'Helvetica', 9.5, GRAY
-            );
+            rightAlignedLine(leftTxt, 'Helvetica-Bold', 9.5, BLACK, item.duration, 'Helvetica', 9, LIGHT_GRAY);
           } else {
-            doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-              .text(leftTxt);
+            doc.fontSize(9.5).fillColor(BLACK).font('Helvetica-Bold').text(leftTxt);
           }
           const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
-          for (const r of resps) {
-            pdfBullet(String(r));
-          }
+          for (const r of resps) { pdfBullet(String(r)); }
           doc.moveDown(0.15);
         } else {
           pdfBullet(String(item));
         }
       }
-    }
-
-    // ═══ LANGUAGES ══════════════════════════════════════════════
-
-    const pdfLangs = (data.languages || []).map(l => typeof l === 'string' ? l : String(l));
-    if (pdfLangs.length > 0) {
-      pdfSectionHeading('Languages');
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfLangs.join('  |  '), { lineGap: 2 });
-    }
-
-    // ═══ HOBBIES ════════════════════════════════════════════════
-
-    const pdfHobbies = (data.hobbies || []).map(h => typeof h === 'string' ? h : String(h));
-    if (pdfHobbies.length > 0) {
-      pdfSectionHeading('Hobbies & Interests');
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfHobbies.join('  |  '), { lineGap: 2 });
     }
 
     doc.end();
