@@ -1,7 +1,7 @@
 const express = require('express');
 const { twiml: { MessagingResponse } } = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk').default;
-const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle } = require('docx');
+const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, TabStopType } = require('docx');
 const PDFDocument = require('pdfkit');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -1060,24 +1060,25 @@ async function createPaymentLink(from, resumeReq) {
 
 async function generateDocx(data) {
   const children = [];
+  const RIGHT_TAB = 10466; // A4 content width in twips (11906 - 720 - 720)
 
-  // ── Section heading with bottom border
+  // ── Section heading with bottom border (13pt, navy, uppercase)
   const sectionHeading = (title) =>
     new Paragraph({
-      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 24, font: 'Calibri', color: '1F3864' })],
+      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 26, font: 'Calibri', color: '1F3864' })],
       border: {
-        bottom: { color: '1F3864', space: 4, style: BorderStyle.SINGLE, size: 8 },
+        bottom: { color: '1F3864', space: 2, style: BorderStyle.SINGLE, size: 6 },
       },
-      spacing: { before: 360, after: 160 },
+      spacing: { before: 300, after: 120 },
     });
 
-  // ── Bullet paragraph
+  // ── Bullet paragraph with hanging indent and bold metrics
   const bulletParagraph = (text) => {
-    // Bold metrics (numbers with % or x)
-    const parts = text.split(/(\d+[\d,.]*[%xX]?|\d{2,}[+]?)/g);
+    // Bold: numbers, percentages, multipliers, currency, large counts
+    const parts = text.split(/((?:[₹$])\s*\d+[\d,.]*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh))?|\d+[\d,.]*\s*[%xXkKmM+]*|\d{2,}[+]?)/g);
     const runs = [];
     for (const part of parts) {
-      if (/^\d+[\d,.]*[%xX]?$|^\d{2,}[+]?$/.test(part)) {
+      if (/^(?:[₹$])\s*\d+|^\d+[\d,.]*\s*[%xXkKmM+]*$|^\d{2,}[+]?$/.test(part)) {
         runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
       } else {
         runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
@@ -1085,107 +1086,120 @@ async function generateDocx(data) {
     }
     return new Paragraph({
       children: [new TextRun({ text: '\u2022  ', size: 21, font: 'Calibri' }), ...runs],
-      spacing: { after: 60 },
-      indent: { left: 360 },
+      spacing: { after: 80, line: 264 },
+      indent: { left: 360, hanging: 180 },
     });
   };
 
-  // ═══════════════════════════════════════════════════════════════
-  // NAME
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ HEADER ═══════════════════════════════════════════════════
+
+  // Name (16pt bold navy, centered)
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: (data.name || 'Resume').toUpperCase(), bold: true, size: 48, font: 'Calibri', color: '1F3864' })],
+      children: [new TextRun({ text: (data.name || 'Resume').toUpperCase(), bold: true, size: 32, font: 'Calibri', color: '1F3864' })],
       alignment: AlignmentType.CENTER,
       spacing: { after: 40 },
     })
   );
 
-  // ── Headline (e.g., "Product Manager | Growth & Analytics")
+  // Headline (11pt, dark gray, centered)
   if (data.headline) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: data.headline, size: 24, font: 'Calibri', color: '404040', italics: true })],
+        children: [new TextRun({ text: data.headline, size: 22, font: 'Calibri', color: '404040' })],
         alignment: AlignmentType.CENTER,
-        spacing: { after: 60 },
+        spacing: { after: 40 },
       })
     );
   }
 
-  // ── Contact line
-  const contactParts = [data.location, data.email, data.phone].filter(Boolean);
+  // Contact line (10pt, gray, centered)
+  const contactParts = [data.location, data.phone, data.email].filter(Boolean);
   if (contactParts.length > 0) {
     children.push(
       new Paragraph({
         children: [new TextRun({ text: contactParts.join('  |  '), size: 20, font: 'Calibri', color: '666666' })],
         alignment: AlignmentType.CENTER,
-        spacing: { after: 240 },
+        spacing: { after: 200 },
       })
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // SUMMARY
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ PROFESSIONAL SUMMARY ═════════════════════════════════════
+
   if (data.summary) {
     children.push(sectionHeading('Professional Summary'));
     children.push(
       new Paragraph({
         children: [new TextRun({ text: data.summary, size: 21, font: 'Calibri' })],
-        spacing: { after: 120 },
+        spacing: { after: 100, line: 276 },
       })
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // PROFESSIONAL EXPERIENCE
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ PROFESSIONAL EXPERIENCE ══════════════════════════════════
+
   if (data.experience && data.experience.length > 0) {
     children.push(sectionHeading('Professional Experience'));
+    const MAX_DETAILED = 4;
 
-    for (const exp of data.experience) {
-      if (typeof exp === 'object') {
-        const headerRuns = [];
-        if (exp.company) {
-          headerRuns.push(new TextRun({ text: exp.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' }));
-          if (exp.title) headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
-        }
-        if (exp.title) {
-          headerRuns.push(new TextRun({ text: exp.title, bold: true, size: 23, font: 'Calibri' }));
-        }
-        if (exp.duration) {
-          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
-          headerRuns.push(new TextRun({ text: exp.duration, size: 21, font: 'Calibri', color: '666666' }));
-        }
-
-        children.push(
-          new Paragraph({ children: headerRuns, spacing: { before: 180, after: 40 } })
-        );
-
-        if (exp.description) {
-          children.push(
-            new Paragraph({
-              children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
-              spacing: { after: 60 },
-            })
-          );
-        }
-
-        const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
-          (exp.responsibilities ? [exp.responsibilities] : []);
-
-        for (const resp of responsibilities) {
-          children.push(bulletParagraph(String(resp)));
-        }
-      } else {
+    for (let i = 0; i < data.experience.length; i++) {
+      const exp = data.experience[i];
+      if (typeof exp !== 'object') {
         children.push(bulletParagraph(String(exp)));
+        continue;
+      }
+
+      // Company name (bold, navy)
+      if (exp.company) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: exp.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' })],
+            spacing: { before: i === 0 ? 0 : 200, after: 30 },
+          })
+        );
+      }
+
+      // Role title + Duration (right-aligned via tab stop)
+      if (exp.title) {
+        const roleChildren = [
+          new TextRun({ text: exp.title, bold: true, size: 21, font: 'Calibri' }),
+        ];
+        if (exp.duration) {
+          roleChildren.push(new TextRun({ text: '\t' }));
+          roleChildren.push(new TextRun({ text: exp.duration, size: 20, font: 'Calibri', color: '666666' }));
+        }
+        children.push(
+          new Paragraph({
+            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+            children: roleChildren,
+            spacing: { after: 60 },
+          })
+        );
+      }
+
+      // Description (optional, italic)
+      if (exp.description) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
+            spacing: { after: 60 },
+          })
+        );
+      }
+
+      // Responsibility bullets (max 10 for first 4 roles, 3 for older)
+      const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
+        (exp.responsibilities ? [exp.responsibilities] : []);
+      const maxBullets = i < MAX_DETAILED ? 10 : 3;
+      for (const resp of responsibilities.slice(0, maxBullets)) {
+        children.push(bulletParagraph(String(resp)));
       }
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // PROJECTS
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ PROJECTS ═════════════════════════════════════════════════
+
   if (data.projects && data.projects.length > 0) {
     children.push(sectionHeading('Projects'));
     for (const proj of data.projects) {
@@ -1193,25 +1207,26 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // EDUCATION
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ EDUCATION ════════════════════════════════════════════════
+
   if (data.education && data.education.length > 0) {
     children.push(sectionHeading('Education'));
     for (const edu of data.education) {
       if (typeof edu === 'object') {
-        const runs = [];
-        if (edu.degree) runs.push(new TextRun({ text: edu.degree, bold: true, size: 23, font: 'Calibri' }));
-        if (edu.institution) {
-          if (runs.length) runs.push(new TextRun({ text: '\n', size: 21, font: 'Calibri' }));
-          runs.push(new TextRun({ text: edu.institution, size: 21, font: 'Calibri', color: '1F3864', bold: true }));
-        }
-        if (edu.year) {
-          runs.push(new TextRun({ text: '  |  ', size: 21, font: 'Calibri', color: '666666' }));
-          runs.push(new TextRun({ text: edu.year, size: 21, font: 'Calibri', color: '666666' }));
+        const rightText = [edu.institution, edu.year].filter(Boolean).join(' | ');
+        const eduChildren = [
+          new TextRun({ text: edu.degree || '', bold: true, size: 21, font: 'Calibri' }),
+        ];
+        if (rightText) {
+          eduChildren.push(new TextRun({ text: '\t' }));
+          eduChildren.push(new TextRun({ text: rightText, size: 21, font: 'Calibri', color: '666666' }));
         }
         children.push(
-          new Paragraph({ children: runs, spacing: { before: 80, after: 100 } })
+          new Paragraph({
+            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+            children: eduChildren,
+            spacing: { before: 60, after: 80 },
+          })
         );
       } else {
         children.push(
@@ -1224,23 +1239,21 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // SKILLS (pipe-separated)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ KEY SKILLS (pipe-separated) ══════════════════════════════
+
   const skillsList = (data.skills || []).map(s => typeof s === 'string' ? s : String(s));
   if (skillsList.length > 0) {
-    children.push(sectionHeading('Skills'));
+    children.push(sectionHeading('Key Skills'));
     children.push(
       new Paragraph({
         children: [new TextRun({ text: skillsList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 120 },
+        spacing: { after: 100 },
       })
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ACHIEVEMENTS
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ ACHIEVEMENTS ═════════════════════════════════════════════
+
   if (data.achievements && data.achievements.length > 0) {
     children.push(sectionHeading('Achievements'));
     for (const ach of data.achievements) {
@@ -1248,9 +1261,8 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // CERTIFICATIONS
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ CERTIFICATIONS ═══════════════════════════════════════════
+
   if (data.certifications && data.certifications.length > 0) {
     children.push(sectionHeading('Certifications'));
     for (const cert of data.certifications) {
@@ -1258,39 +1270,42 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // TOOLS (pipe-separated)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ TOOLS & TECHNOLOGIES (pipe-separated) ════════════════════
+
   const toolsList = (data.tools || []).map(t => typeof t === 'string' ? t : String(t));
   if (toolsList.length > 0) {
-    children.push(sectionHeading('Tools'));
+    children.push(sectionHeading('Tools & Technologies'));
     children.push(
       new Paragraph({
         children: [new TextRun({ text: toolsList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 120 },
+        spacing: { after: 100 },
       })
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // LEADERSHIP EXPERIENCE
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ LEADERSHIP & EXTRACURRICULAR ═════════════════════════════
+
   if (data.leadership && data.leadership.length > 0) {
-    children.push(sectionHeading('Leadership Experience'));
+    children.push(sectionHeading('Leadership & Extracurricular'));
     for (const item of data.leadership) {
       if (typeof item === 'object' && item.title) {
-        const headerRuns = [];
-        if (item.title) headerRuns.push(new TextRun({ text: item.title, bold: true, size: 23, font: 'Calibri' }));
+        const headerRuns = [
+          new TextRun({ text: item.title, bold: true, size: 21, font: 'Calibri' }),
+        ];
         if (item.company) {
-          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
-          headerRuns.push(new TextRun({ text: item.company, bold: true, size: 23, font: 'Calibri', color: '1F3864' }));
+          headerRuns.push(new TextRun({ text: ' | ', size: 21, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: item.company, size: 21, font: 'Calibri', color: '1F3864', bold: true }));
         }
         if (item.duration) {
-          headerRuns.push(new TextRun({ text: '  |  ', size: 23, font: 'Calibri', color: '666666' }));
-          headerRuns.push(new TextRun({ text: item.duration, size: 21, font: 'Calibri', color: '666666' }));
+          headerRuns.push(new TextRun({ text: '\t' }));
+          headerRuns.push(new TextRun({ text: item.duration, size: 20, font: 'Calibri', color: '666666' }));
         }
         children.push(
-          new Paragraph({ children: headerRuns, spacing: { before: 120, after: 40 } })
+          new Paragraph({
+            tabStops: [{ type: TabStopType.RIGHT, position: RIGHT_TAB }],
+            children: headerRuns,
+            spacing: { before: 120, after: 40 },
+          })
         );
         const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
         for (const r of resps) {
@@ -1302,29 +1317,26 @@ async function generateDocx(data) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // LANGUAGES (pipe-separated)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ LANGUAGES (pipe-separated) ═══════════════════════════════
+
   const langList = (data.languages || []).map(l => typeof l === 'string' ? l : String(l));
   if (langList.length > 0) {
     children.push(sectionHeading('Languages'));
     children.push(
       new Paragraph({
         children: [new TextRun({ text: langList.join('  |  '), size: 21, font: 'Calibri' })],
-        spacing: { after: 120 },
+        spacing: { after: 100 },
       })
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // HOBBIES
-  // ═══════════════════════════════════════════════════════════════
+  // ═══ HOBBIES ══════════════════════════════════════════════════
+
   if (data.hobbies && data.hobbies.length > 0) {
     children.push(sectionHeading('Hobbies & Interests'));
-    const hobbyTexts = data.hobbies.map(h => typeof h === 'string' ? h : String(h));
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: hobbyTexts.join('  |  '), size: 21, font: 'Calibri' })],
+        children: [new TextRun({ text: data.hobbies.map(h => typeof h === 'string' ? h : String(h)).join('  |  '), size: 21, font: 'Calibri' })],
       })
     );
   }
@@ -1332,7 +1344,10 @@ async function generateDocx(data) {
   const doc = new Document({
     sections: [{
       properties: {
-        page: { margin: { top: 720, right: 720, bottom: 720, left: 720 } },
+        page: {
+          size: { width: 11906, height: 16838 },
+          margin: { top: 720, right: 720, bottom: 720, left: 720 },
+        },
       },
       children,
     }],
@@ -1351,7 +1366,7 @@ async function generatePdf(data) {
     const filePath = path.join(os.tmpdir(), `resume-${crypto.randomUUID()}.pdf`);
     const doc = new PDFDocument({
       size: 'A4',
-      margin: 50,
+      margins: { top: 50, right: 50, bottom: 50, left: 50 },
       info: {
         Title: (data.name || 'Resume') + ' - Resume',
         Author: 'ResumeWala.ai',
@@ -1363,20 +1378,56 @@ async function generatePdf(data) {
 
     const NAVY = '#1F3864';
     const GRAY = '#666666';
+    const DARK_GRAY = '#404040';
     const BLACK = '#000000';
+    const PAGE_WIDTH = 495; // A4 content: 595 - 50 - 50
+    const LEFT = 50;
+    const RIGHT_EDGE = LEFT + PAGE_WIDTH;
 
-    // Name
-    doc.fontSize(22).fillColor(NAVY).font('Helvetica-Bold')
+    // Helper: right-aligned pair on same line
+    const rightAlignedLine = (leftTxt, lFont, lSize, lColor, rightTxt, rFont, rSize, rColor) => {
+      const startY = doc.y;
+      doc.font(rFont).fontSize(rSize);
+      const rWidth = doc.widthOfString(rightTxt);
+      doc.font(lFont).fontSize(lSize).fillColor(lColor)
+        .text(leftTxt, LEFT, startY, { width: PAGE_WIDTH - rWidth - 10 });
+      const afterLeftY = doc.y;
+      doc.font(rFont).fontSize(rSize).fillColor(rColor)
+        .text(rightTxt, RIGHT_EDGE - rWidth, startY);
+      doc.y = Math.max(afterLeftY, doc.y);
+    };
+
+    // Helper: section heading with line
+    const pdfSectionHeading = (title) => {
+      doc.moveDown(0.4);
+      doc.fontSize(11).fillColor(NAVY).font('Helvetica-Bold')
+        .text(title.toUpperCase());
+      const y = doc.y;
+      doc.moveTo(LEFT, y).lineTo(RIGHT_EDGE, y)
+        .strokeColor(NAVY).lineWidth(0.8).stroke();
+      doc.moveDown(0.15);
+    };
+
+    // Helper: bullet with hanging indent
+    const pdfBullet = (text) => {
+      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
+        .text('\u2022  ' + text, LEFT + 15, doc.y, {
+          width: PAGE_WIDTH - 15,
+          lineGap: 2,
+        });
+    };
+
+    // ═══ HEADER ═════════════════════════════════════════════════
+
+    doc.fontSize(16).fillColor(NAVY).font('Helvetica-Bold')
       .text((data.name || 'Resume').toUpperCase(), { align: 'center' });
 
-    // Headline
     if (data.headline) {
-      doc.fontSize(11).fillColor(GRAY).font('Helvetica-Oblique')
+      doc.fontSize(10.5).fillColor(DARK_GRAY).font('Helvetica')
         .text(data.headline, { align: 'center' });
     }
 
-    // Contact
-    const contactParts = [data.location, data.email, data.phone].filter(Boolean);
+    const contactParts = [data.location, data.phone, data.email].filter(Boolean);
     if (contactParts.length > 0) {
       doc.fontSize(9).fillColor(GRAY).font('Helvetica')
         .text(contactParts.join('  |  '), { align: 'center' });
@@ -1384,54 +1435,66 @@ async function generatePdf(data) {
 
     doc.moveDown(0.5);
 
-    // Helper: section heading with line
-    const pdfSectionHeading = (title) => {
-      doc.moveDown(0.3);
-      doc.fontSize(11).fillColor(NAVY).font('Helvetica-Bold')
-        .text(title.toUpperCase());
-      const y = doc.y;
-      doc.moveTo(50, y).lineTo(545, y)
-        .strokeColor(NAVY).lineWidth(1).stroke();
-      doc.moveDown(0.2);
-    };
+    // ═══ PROFESSIONAL SUMMARY ═══════════════════════════════════
 
-    // Helper: bullet point
-    const pdfBullet = (text) => {
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text('\u2022  ' + text, { indent: 15, lineGap: 2 });
-    };
-
-    // Summary
     if (data.summary) {
       pdfSectionHeading('Professional Summary');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(data.summary, { lineGap: 2 });
+        .text(data.summary, { lineGap: 3 });
     }
 
-    // Experience
+    // ═══ PROFESSIONAL EXPERIENCE ════════════════════════════════
+
     if (data.experience && data.experience.length > 0) {
       pdfSectionHeading('Professional Experience');
-      for (const exp of data.experience) {
-        if (typeof exp === 'object') {
-          const parts = [exp.company, exp.title, exp.duration].filter(Boolean);
-          doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-            .text(parts.join('  |  '));
-          if (exp.description) {
-            doc.fontSize(9).fillColor(GRAY).font('Helvetica-Oblique')
-              .text(exp.description);
-          }
-          const resps = Array.isArray(exp.responsibilities) ? exp.responsibilities : [];
-          for (const r of resps) {
-            pdfBullet(String(r));
-          }
-          doc.moveDown(0.3);
-        } else {
+      const MAX_DETAILED = 4;
+
+      for (let i = 0; i < data.experience.length; i++) {
+        const exp = data.experience[i];
+        if (typeof exp !== 'object') {
           pdfBullet(String(exp));
+          continue;
+        }
+
+        if (i > 0) doc.moveDown(0.3);
+
+        // Company name (bold, navy)
+        if (exp.company) {
+          doc.fontSize(10.5).fillColor(NAVY).font('Helvetica-Bold')
+            .text(exp.company);
+        }
+
+        // Role + Duration (right-aligned)
+        if (exp.title) {
+          if (exp.duration) {
+            rightAlignedLine(
+              exp.title, 'Helvetica-Bold', 10, BLACK,
+              exp.duration, 'Helvetica', 9.5, GRAY
+            );
+          } else {
+            doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold')
+              .text(exp.title);
+          }
+        }
+
+        // Description (optional, italic)
+        if (exp.description) {
+          doc.fontSize(9).fillColor(GRAY).font('Helvetica-Oblique')
+            .text(exp.description);
+        }
+
+        // Bullets (max 10 for first 4 roles, 3 for older)
+        const responsibilities = Array.isArray(exp.responsibilities) ? exp.responsibilities :
+          (exp.responsibilities ? [exp.responsibilities] : []);
+        const maxBullets = i < MAX_DETAILED ? 10 : 3;
+        for (const resp of responsibilities.slice(0, maxBullets)) {
+          pdfBullet(String(resp));
         }
       }
     }
 
-    // Projects
+    // ═══ PROJECTS ═══════════════════════════════════════════════
+
     if (data.projects && data.projects.length > 0) {
       pdfSectionHeading('Projects');
       for (const proj of data.projects) {
@@ -1439,37 +1502,42 @@ async function generatePdf(data) {
       }
     }
 
-    // Education
+    // ═══ EDUCATION ══════════════════════════════════════════════
+
     if (data.education && data.education.length > 0) {
       pdfSectionHeading('Education');
       for (const edu of data.education) {
         if (typeof edu === 'object') {
-          if (edu.degree) {
+          const rightText = [edu.institution, edu.year].filter(Boolean).join(' | ');
+          if (rightText) {
+            rightAlignedLine(
+              edu.degree || '', 'Helvetica-Bold', 10, BLACK,
+              rightText, 'Helvetica', 10, GRAY
+            );
+          } else {
             doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold')
-              .text(edu.degree);
+              .text(edu.degree || '');
           }
-          const subParts = [edu.institution, edu.year].filter(Boolean);
-          if (subParts.length > 0) {
-            doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-              .text(subParts.join('  |  '));
-          }
+          doc.moveDown(0.1);
         } else {
           doc.fontSize(10).fillColor(BLACK).font('Helvetica')
             .text(String(edu));
+          doc.moveDown(0.1);
         }
-        doc.moveDown(0.2);
       }
     }
 
-    // Skills
+    // ═══ KEY SKILLS ═════════════════════════════════════════════
+
     const pdfSkills = (data.skills || []).map(s => typeof s === 'string' ? s : String(s));
     if (pdfSkills.length > 0) {
-      pdfSectionHeading('Skills');
+      pdfSectionHeading('Key Skills');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
         .text(pdfSkills.join('  |  '), { lineGap: 2 });
     }
 
-    // Achievements
+    // ═══ ACHIEVEMENTS ═══════════════════════════════════════════
+
     if (data.achievements && data.achievements.length > 0) {
       pdfSectionHeading('Achievements');
       for (const ach of data.achievements) {
@@ -1477,7 +1545,8 @@ async function generatePdf(data) {
       }
     }
 
-    // Certifications
+    // ═══ CERTIFICATIONS ═════════════════════════════════════════
+
     if (data.certifications && data.certifications.length > 0) {
       pdfSectionHeading('Certifications');
       for (const cert of data.certifications) {
@@ -1485,34 +1554,44 @@ async function generatePdf(data) {
       }
     }
 
-    // Tools
+    // ═══ TOOLS & TECHNOLOGIES ═══════════════════════════════════
+
     const pdfTools = (data.tools || []).map(t => typeof t === 'string' ? t : String(t));
     if (pdfTools.length > 0) {
-      pdfSectionHeading('Tools');
+      pdfSectionHeading('Tools & Technologies');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
         .text(pdfTools.join('  |  '), { lineGap: 2 });
     }
 
-    // Leadership
+    // ═══ LEADERSHIP & EXTRACURRICULAR ═══════════════════════════
+
     if (data.leadership && data.leadership.length > 0) {
-      pdfSectionHeading('Leadership Experience');
+      pdfSectionHeading('Leadership & Extracurricular');
       for (const item of data.leadership) {
         if (typeof item === 'object' && item.title) {
-          const parts = [item.title, item.company, item.duration].filter(Boolean);
-          doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-            .text(parts.join('  |  '));
+          const leftTxt = [item.title, item.company].filter(Boolean).join(' | ');
+          if (item.duration) {
+            rightAlignedLine(
+              leftTxt, 'Helvetica-Bold', 10, NAVY,
+              item.duration, 'Helvetica', 9.5, GRAY
+            );
+          } else {
+            doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
+              .text(leftTxt);
+          }
           const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
           for (const r of resps) {
             pdfBullet(String(r));
           }
-          doc.moveDown(0.2);
+          doc.moveDown(0.15);
         } else {
           pdfBullet(String(item));
         }
       }
     }
 
-    // Languages
+    // ═══ LANGUAGES ══════════════════════════════════════════════
+
     const pdfLangs = (data.languages || []).map(l => typeof l === 'string' ? l : String(l));
     if (pdfLangs.length > 0) {
       pdfSectionHeading('Languages');
@@ -1520,7 +1599,8 @@ async function generatePdf(data) {
         .text(pdfLangs.join('  |  '), { lineGap: 2 });
     }
 
-    // Hobbies
+    // ═══ HOBBIES ════════════════════════════════════════════════
+
     const pdfHobbies = (data.hobbies || []).map(h => typeof h === 'string' ? h : String(h));
     if (pdfHobbies.length > 0) {
       pdfSectionHeading('Hobbies & Interests');
