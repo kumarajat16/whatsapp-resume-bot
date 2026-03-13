@@ -472,6 +472,27 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ─── WhatsApp Cloud API Webhook ──────────────────────────────────────────────
+
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === process.env.WA_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
+app.use("/webhook", express.json());
+
+app.post("/webhook", (req, res) => {
+  console.log("Webhook event:", JSON.stringify(req.body, null, 2));
+  res.sendStatus(200);
+});
+
 app.get('/resume/:token', (req, res) => {
   const entry = tempFiles.get(req.params.token);
   if (!entry) return res.status(404).send('File not found or expired.');
