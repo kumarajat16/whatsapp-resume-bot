@@ -1,5 +1,6 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk').default;
+const OpenAI = require('openai');
 const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, TabStopType } = require('docx');
 const PDFDocument = require('pdfkit');
 const pdfParse = require('pdf-parse');
@@ -14,6 +15,7 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -472,6 +474,7 @@ app.get('/health', (req, res) => {
   res.json({
     service: 'ResumeWala.ai',
     ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
     WA_PHONE_NUMBER_ID: !!process.env.WA_PHONE_NUMBER_ID,
     WA_ACCESS_TOKEN: !!process.env.WA_ACCESS_TOKEN,
     DATABASE_URL: !!process.env.DATABASE_URL,
@@ -521,6 +524,14 @@ app.post("/webhook", (req, res) => {
       console.log('[IN]', from, '|', incomingMsg);
       handleIncomingMessage(from, incomingMsg).catch(err => {
         console.error('MESSAGE HANDLER ERROR:', err);
+      });
+    } else if (msgType === 'audio') {
+      const mediaId = message.audio?.id;
+      const mimeType = message.audio?.mime_type || 'audio/ogg';
+      console.log('[IN]', from, '| [VOICE:', mimeType, ']');
+      console.log('[VOICE_RECEIVED]', from);
+      handleAudioMessage(from, mediaId, mimeType).catch(err => {
+        console.error('AUDIO HANDLER ERROR:', err);
       });
     } else if (msgType === 'document' || msgType === 'image') {
       // Media messages (PDF/docx uploads)
@@ -597,6 +608,121 @@ async function handleMediaMessage(from, mediaId, mimeType, caption) {
     await sendWhatsApp(from, 'Something went wrong. Please try again.').catch(console.error);
   }
 }
+
+// ─── Voice message handler ───────────────────────────────────────────────────
+
+const VOICE_LOADER_MESSAGES = [
+  'Got your voice note \uD83C\uDFA7',
+  'Listening carefully to what you said...',
+  'Understanding your instructions for the resume...',
+];
+
+async function handleAudioMessage(from, mediaId, mimeType) {
+  try {
+    const user = await db.findOrCreateUser(from);
+    await db.resetDailyLimitsIfNeeded(user.id);
+
+    const limits = await db.getUserLimits(user.id);
+    if (limits.daily_messages >= DAILY_MESSAGE_LIMIT) {
+      await sendWhatsApp(from, 'System usage limit reached. Please try again tomorrow.');
+      return;
+    }
+    await db.incrementMessageCount(user.id);
+
+    // Send loader messages (non-blocking staged feedback)
+    sendVoiceLoaderMessages(from).catch(console.error);
+
+    // Download audio file
+    let audioPath;
+    try {
+      audioPath = await downloadAudioFile(mediaId);
+      console.log('[VOICE_DOWNLOADED]', from, audioPath);
+    } catch (err) {
+      console.error('[VOICE_DOWNLOAD_ERROR]', err.message);
+      await sendWhatsApp(from, 'Could not download your voice note. Please try sending it again or type your message instead.');
+      return;
+    }
+
+    // Check file size (~2 min voice note is roughly 500KB-1MB in OGG)
+    const stats = fs.statSync(audioPath);
+    if (stats.size > 2 * 1024 * 1024) {
+      fs.unlink(audioPath, () => {});
+      await sendWhatsApp(from, 'For best results please keep voice notes under 1 minute so I can understand them properly.');
+      return;
+    }
+
+    // Transcribe audio
+    let transcription;
+    try {
+      transcription = await transcribeAudio(audioPath);
+      console.log('[VOICE_TRANSCRIBED]', from);
+      console.log('[TRANSCRIPTION_TEXT]', transcription);
+    } catch (err) {
+      console.error('[VOICE_TRANSCRIPTION_ERROR]', err.message);
+      fs.unlink(audioPath, () => {});
+      await sendWhatsApp(from, "I couldn't clearly understand the audio. Could you try sending the voice note again or type the message?");
+      return;
+    } finally {
+      // Clean up audio file
+      fs.unlink(audioPath, () => {});
+    }
+
+    // Handle empty transcription
+    if (!transcription || !transcription.trim()) {
+      await sendWhatsApp(from, "I couldn't clearly understand the audio. Could you try sending the voice note again or type the message?");
+      return;
+    }
+
+    // Feed transcription directly into the existing text pipeline
+    const reply = await handleMessage(from, user, transcription.trim());
+    await sendWhatsApp(from, reply);
+  } catch (err) {
+    console.error('HANDLE AUDIO ERROR:', err);
+    await sendWhatsApp(from, 'Something went wrong processing your voice note. Please try again or type your message.').catch(console.error);
+  }
+}
+
+async function sendVoiceLoaderMessages(to) {
+  for (let i = 0; i < VOICE_LOADER_MESSAGES.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 1500));
+    await sendWhatsApp(to, VOICE_LOADER_MESSAGES[i]);
+  }
+}
+
+async function downloadAudioFile(mediaId) {
+  // Step 1: Get media URL from Meta
+  const urlRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+    headers: { 'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}` },
+  });
+  if (!urlRes.ok) {
+    throw new Error('Audio media URL fetch failed: ' + urlRes.status);
+  }
+  const { url } = await urlRes.json();
+
+  // Step 2: Download the audio binary
+  const mediaRes = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}` },
+  });
+  if (!mediaRes.ok) {
+    throw new Error('Audio download failed: ' + mediaRes.status);
+  }
+
+  const arrayBuffer = await mediaRes.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const audioPath = path.join(os.tmpdir(), `audio-${crypto.randomUUID()}.ogg`);
+  fs.writeFileSync(audioPath, buffer);
+  return audioPath;
+}
+
+async function transcribeAudio(audioPath) {
+  const transcription = await openai.audio.transcriptions.create({
+    file: fs.createReadStream(audioPath),
+    model: 'whisper-1',
+  });
+  return transcription.text;
+}
+
+// ─── Routes (continued) ─────────────────────────────────────────────────────
 
 app.get('/resume/:token', (req, res) => {
   const entry = tempFiles.get(req.params.token);
