@@ -1,6 +1,6 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk').default;
-const OpenAI = require('openai');
+const Groq = require('groq-sdk');
 const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, TabStopType } = require('docx');
 const PDFDocument = require('pdfkit');
 const pdfParse = require('pdf-parse');
@@ -15,7 +15,7 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -474,7 +474,7 @@ app.get('/health', (req, res) => {
   res.json({
     service: 'ResumeWala.ai',
     ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
-    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
     WA_PHONE_NUMBER_ID: !!process.env.WA_PHONE_NUMBER_ID,
     WA_ACCESS_TOKEN: !!process.env.WA_ACCESS_TOKEN,
     DATABASE_URL: !!process.env.DATABASE_URL,
@@ -645,7 +645,7 @@ async function handleAudioMessage(from, mediaId, mimeType) {
 
     // Check file size (~2 min voice note is roughly 500KB-1MB in OGG)
     const stats = fs.statSync(audioPath);
-    if (stats.size > 2 * 1024 * 1024) {
+    if (stats.size > 10 * 1024 * 1024) {
       fs.unlink(audioPath, () => {});
       await sendWhatsApp(from, 'For best results please keep voice notes under 1 minute so I can understand them properly.');
       return;
@@ -715,11 +715,12 @@ async function downloadAudioFile(mediaId) {
 }
 
 async function transcribeAudio(audioPath) {
-  const transcription = await openai.audio.transcriptions.create({
+  const transcription = await groq.audio.transcriptions.create({
     file: fs.createReadStream(audioPath),
-    model: 'whisper-1',
+    model: 'whisper-large-v3',
+    response_format: 'text',
   });
-  return transcription.text;
+  return transcription;
 }
 
 // ─── Routes (continued) ─────────────────────────────────────────────────────
