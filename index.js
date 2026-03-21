@@ -1770,10 +1770,21 @@ async function generatePdf(data) {
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 async function start() {
+  console.log('--- ResumeWala.ai Startup ---');
+  console.log('ENV PORT:', process.env.PORT);
+  console.log('NODE_ENV:', process.env.NODE_ENV);
+  console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'SET' : 'NOT SET');
+  console.log('WA_PHONE_NUMBER_ID:', process.env.WA_PHONE_NUMBER_ID ? 'SET' : 'NOT SET');
+  console.log('WA_ACCESS_TOKEN:', process.env.WA_ACCESS_TOKEN ? 'SET' : 'NOT SET');
+  console.log('WA_VERIFY_TOKEN:', process.env.WA_VERIFY_TOKEN ? 'SET' : 'NOT SET');
+  console.log('ANTHROPIC_API_KEY:', process.env.ANTHROPIC_API_KEY ? 'SET' : 'NOT SET');
+  console.log('GROQ_API_KEY:', process.env.GROQ_API_KEY ? 'SET' : 'NOT SET');
+  console.log('Starting Express server...');
+
   await db.initDb();
   console.log('ResumeWala.ai - Database initialized');
 
-  const PORT = process.env.PORT;
+  const PORT = process.env.PORT || 8080;
   app.listen(PORT, "0.0.0.0", () => {
     console.log('ResumeWala.ai running on port ' + PORT);
     console.log('Razorpay:', RAZORPAY_ENABLED ? 'ENABLED' : 'DISABLED (free mode)');
@@ -1793,10 +1804,12 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received — shutting down gracefully');
+  process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('SIGINT received — shutting down gracefully');
+  process.exit(0);
 });
 
 start().catch(err => {

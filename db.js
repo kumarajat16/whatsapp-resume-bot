@@ -1,8 +1,7 @@
 const { Pool } = require('pg');
 
 if (!process.env.DATABASE_URL) {
-  console.error('ERROR: DATABASE_URL environment variable is not set. Exiting.');
-  process.exit(1);
+  console.error('WARNING: DATABASE_URL environment variable is not set. Database operations will fail.');
 }
 
 const pool = new Pool({
