@@ -3,6 +3,7 @@
 // whether Railway can keep the container alive.
 
 const express = require("express");
+const axios = require("axios");
 const app = express();
 app.use(express.json());
 
@@ -68,11 +69,43 @@ app.get("/webhook", (req, res) => {
 
 });
 
-app.post("/webhook", (req, res) => {
+app.post("/webhook", async (req, res) => {
   console.log("POST WEBHOOK HIT");
   console.log("Headers:", req.headers);
   console.log("Body:", JSON.stringify(req.body));
   res.sendStatus(200);
+
+  try {
+
+    const PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
+    const ACCESS_TOKEN = process.env.WA_TOKEN;
+
+    await axios.post(
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: "919217232103",
+        type: "text",
+        text: {
+          body: "Bot is alive ✅ ResumeWala webhook working."
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("Reply sent successfully");
+
+  } catch (error) {
+
+    console.log("WhatsApp send error");
+    console.log(error.response?.data || error.message);
+
+  }
 });
 
 const PORT = process.env.PORT || 8080;
