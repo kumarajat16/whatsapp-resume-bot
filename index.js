@@ -13,6 +13,44 @@ app.get("/health", (req, res) => {
   res.status(200).send("OK");
 });
 
+app.get("/privacy", (req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(`
+  <html>
+  <head>
+    <title>ResumeWala.ai Privacy Policy</title>
+    <style>
+      body { font-family: Arial; max-width: 800px; margin: 40px auto; line-height: 1.6; }
+      h1 { color:#333; }
+    </style>
+  </head>
+  <body>
+    <h1>ResumeWala.ai Privacy Policy</h1>
+
+    <p>ResumeWala.ai provides automated resume generation services through WhatsApp.</p>
+
+    <h2>Information We Collect</h2>
+    <ul>
+      <li>Name</li>
+      <li>Email</li>
+      <li>Resume information provided by the user</li>
+      <li>WhatsApp message content</li>
+    </ul>
+
+    <h2>How We Use Information</h2>
+    <p>Information is used only to generate resumes and improve the service.</p>
+
+    <h2>Data Sharing</h2>
+    <p>We do not sell or share personal data with third parties.</p>
+
+    <h2>Contact</h2>
+    <p>Email: support@resumewala.ai</p>
+
+  </body>
+  </html>
+  `);
+});
+
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
