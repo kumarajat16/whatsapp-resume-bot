@@ -1247,23 +1247,26 @@ async function createPaymentLink(from, resumeReq) {
 async function generateDocx(data) {
   const children = [];
 
-  // ── Section heading with bottom border
+  // ── Section heading with bottom border and clear spacing
   const sectionHeading = (title) =>
     new Paragraph({
       children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 24, font: 'Calibri', color: '1F3864' })],
       border: {
-        bottom: { color: '1F3864', space: 4, style: BorderStyle.SINGLE, size: 8 },
+        bottom: { color: '1F3864', space: 6, style: BorderStyle.SINGLE, size: 8 },
       },
-      spacing: { before: 360, after: 160 },
+      spacing: { before: 400, after: 200 },
     });
 
-  // ── Bullet paragraph
+  // ── Bullet paragraph with hanging indent and strategic bold
   const bulletParagraph = (text) => {
-    // Bold metrics (numbers with % or x)
-    const parts = text.split(/(\d+[\d,.]*[%xX]?|\d{2,}[+]?)/g);
+    // Bold metric phrases: number + nearby context (e.g. "35% growth", "₹5L+ revenue", "10,000+ customers")
+    const metricPattern = /((?:[₹$])\s*\d+[\d,.]*\s*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh|crore))?\s*\+?\s*(?:revenue|users|customers|leads|growth|improvement|reduction|increase)?|\d+[\d,.]*\s*[%xX]+(?:\s+(?:growth|improvement|increase|reduction|conversion|revenue|ROI|margin))?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|members|participants|team|employees|stores|cities|brands|clients|partners|campaigns|experiments|projects|products|months|years|weeks|days|cr|lakh|Cr|Lakh|crore|million|billion|[KkMm])\w*)/gi;
+    const parts = text.split(metricPattern);
     const runs = [];
     for (const part of parts) {
-      if (/^\d+[\d,.]*[%xX]?$|^\d{2,}[+]?$/.test(part)) {
+      if (!part) continue;
+      if (metricPattern.test(part)) {
+        metricPattern.lastIndex = 0; // reset regex state
         runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
       } else {
         runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
@@ -1271,8 +1274,8 @@ async function generateDocx(data) {
     }
     return new Paragraph({
       children: [new TextRun({ text: '\u2022  ', size: 21, font: 'Calibri' }), ...runs],
-      spacing: { after: 60 },
-      indent: { left: 360 },
+      spacing: { after: 60, line: 264 },
+      indent: { left: 360, hanging: 180 },
     });
   };
 
@@ -1352,7 +1355,7 @@ async function generateDocx(data) {
           children.push(
             new Paragraph({
               children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
-              spacing: { after: 60 },
+              spacing: { after: 120 },
             })
           );
         }
@@ -1570,21 +1573,29 @@ async function generatePdf(data) {
 
     doc.moveDown(0.5);
 
-    // Helper: section heading with line
+    // Helper: section heading with line and clear spacing
     const pdfSectionHeading = (title) => {
-      doc.moveDown(0.3);
+      doc.moveDown(0.6);
       doc.fontSize(11).fillColor(NAVY).font('Helvetica-Bold')
         .text(title.toUpperCase());
-      const y = doc.y;
+      const y = doc.y + 2;
       doc.moveTo(50, y).lineTo(545, y)
         .strokeColor(NAVY).lineWidth(1).stroke();
-      doc.moveDown(0.2);
+      doc.moveDown(0.35);
     };
 
-    // Helper: bullet point
+    // Helper: bullet point with hanging indent
+    const BULLET_INDENT = 15;
     const pdfBullet = (text) => {
+      const startX = 50 + BULLET_INDENT;
+      const bulletWidth = doc.font('Helvetica').fontSize(10).widthOfString('\u2022  ');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text('\u2022  ' + text, { indent: 15, lineGap: 2 });
+        .text('\u2022', startX, doc.y);
+      doc.moveUp();
+      doc.text(text, startX + bulletWidth, doc.y, {
+        width: 545 - startX - bulletWidth,
+        lineGap: 2,
+      });
     };
 
     // Summary
@@ -1605,6 +1616,7 @@ async function generatePdf(data) {
           if (exp.description) {
             doc.fontSize(9).fillColor(GRAY).font('Helvetica-Oblique')
               .text(exp.description);
+            doc.moveDown(0.2);
           }
           const resps = Array.isArray(exp.responsibilities) ? exp.responsibilities : [];
           for (const r of resps) {
