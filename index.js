@@ -4,6 +4,7 @@
 
 const express = require("express");
 const app = express();
+app.use(express.json());
 
 app.get("/", (req, res) => {
   res.send("ResumeWala.ai server alive");
@@ -65,6 +66,13 @@ app.get("/webhook", (req, res) => {
     res.sendStatus(403);
   }
 
+});
+
+app.post("/webhook", (req, res) => {
+  console.log("POST WEBHOOK HIT");
+  console.log("Headers:", req.headers);
+  console.log("Body:", JSON.stringify(req.body));
+  res.sendStatus(200);
 });
 
 const PORT = process.env.PORT || 8080;
