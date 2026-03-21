@@ -1803,13 +1803,11 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received — shutting down gracefully');
-  process.exit(0);
+  console.log('SIGTERM received — keeping process alive for Railway');
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT received — shutting down gracefully');
-  process.exit(0);
+  console.log('SIGINT received');
 });
 
 start().catch(err => {
