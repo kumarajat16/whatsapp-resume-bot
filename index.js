@@ -12,7 +12,13 @@ const crypto = require('crypto');
 const db = require('./db');
 
 const app = express();
+app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// ─── Root endpoint (health check) ───────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.send("ResumeWala.ai is running");
+});
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -497,8 +503,6 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.use("/webhook", express.json());
-
 app.post("/webhook", (req, res) => {
   // Always respond 200 immediately so Meta doesn't retry
   res.sendStatus(200);
@@ -779,7 +783,6 @@ h1{color:#1F3864;font-size:24px}h2{color:#1F3864;font-size:18px;margin-top:30px}
 
 // Razorpay webhook
 if (RAZORPAY_ENABLED) {
-  app.use('/razorpay-webhook', express.json());
   app.post('/razorpay-webhook', async (req, res) => {
     console.log('RAZORPAY WEBHOOK RECEIVED');
     console.log('Event:', req.body.event);
@@ -1770,7 +1773,7 @@ async function start() {
   await db.initDb();
   console.log('ResumeWala.ai - Database initialized');
 
-  const PORT = process.env.PORT || 3000;
+  const PORT = process.env.PORT || 8080;
   app.listen(PORT, () => {
     console.log('ResumeWala.ai running on port ' + PORT);
     console.log('Razorpay:', RAZORPAY_ENABLED ? 'ENABLED' : 'DISABLED (free mode)');
