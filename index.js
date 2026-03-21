@@ -1774,7 +1774,7 @@ async function start() {
   console.log('ResumeWala.ai - Database initialized');
 
   const PORT = process.env.PORT;
-  app.listen(PORT, () => {
+  app.listen(PORT, "0.0.0.0", () => {
     console.log('ResumeWala.ai running on port ' + PORT);
     console.log('Razorpay:', RAZORPAY_ENABLED ? 'ENABLED' : 'DISABLED (free mode)');
     console.log('BASE_URL:', process.env.BASE_URL || 'NOT SET');
