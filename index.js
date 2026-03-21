@@ -745,6 +745,38 @@ h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</st
 <p style="margin-top:20px;color:#888;font-size:14px">You can close this page.</p></div></body></html>`);
 });
 
+app.get('/privacy', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>ResumeWala Privacy Policy</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#333;line-height:1.7}
+h1{color:#1F3864;font-size:24px}h2{color:#1F3864;font-size:18px;margin-top:30px}p{margin:10px 0}
+.footer{margin-top:40px;color:#888;font-size:13px}</style></head>
+<body>
+<h1>ResumeWala Privacy Policy</h1>
+<p><strong>Effective Date:</strong> March 2026</p>
+
+<h2>What We Collect</h2>
+<p>ResumeWala collects resume files, voice notes, and text inputs you share via WhatsApp solely for the purpose of generating and improving your resume.</p>
+
+<h2>How We Use Your Data</h2>
+<p>Your data is processed by AI services (including Anthropic Claude and Groq) to extract resume information, transcribe voice messages, and generate professional resumes. Files are temporarily stored during processing and deleted automatically.</p>
+
+<h2>Data Sharing</h2>
+<p>Your data is not sold or shared with third parties. It is only sent to AI service providers as needed to generate your resume.</p>
+
+<h2>Data Retention</h2>
+<p>Uploaded files are deleted within 15 minutes of processing. Conversation data is stored to maintain your resume-building session. Generated resume download links expire within 15 minutes.</p>
+
+<h2>Your Rights</h2>
+<p>You can request deletion of all your data at any time by messaging "delete my data" on WhatsApp or contacting us directly.</p>
+
+<h2>Contact</h2>
+<p>For any privacy concerns, reach out to us via WhatsApp or email.</p>
+
+<p class="footer">ResumeWala.ai — Built for Indian job seekers.</p>
+</body></html>`);
+});
+
 // Razorpay webhook
 if (RAZORPAY_ENABLED) {
   app.use('/razorpay-webhook', express.json());
