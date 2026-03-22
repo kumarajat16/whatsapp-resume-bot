@@ -78,7 +78,7 @@ app.post("/webhook", async (req, res) => {
   try {
 
     const PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
-    const ACCESS_TOKEN = process.env.WA_TOKEN;
+    const ACCESS_TOKEN = process.env.WA_ACCESS_TOKEN;
 
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
