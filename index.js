@@ -79,72 +79,144 @@ async function sendWhatsApp(to, body) {
   }
 }
 
-// ─── Progress messages (no AI cost) ──────────────────────────────────────────
+// ─── Filler message batches (randomized per scenario) ────────────────────────
 
-const PROGRESS_MESSAGES = [
-  'Scanning your resume...',
-  'Understanding your work experience...',
-  'Identifying your skills...',
-  'Checking education details...',
-  'Almost done reviewing your profile...',
+const VOICE_FILLER_BATCHES = [
+  [
+    '🎧 Listening to your voice note…',
+    '✍️ Transcribing what you said…',
+    '🧠 Understanding your experience…',
+  ],
+  [
+    '🎙️ Got your voice message.',
+    '📝 Converting it into text…',
+    '🔍 Extracting key details…',
+  ],
+  [
+    '🎧 Playing your voice note…',
+    '💬 Processing what you shared…',
+    '✨ Almost ready…',
+  ],
 ];
 
-async function sendProgressMessages(to, count) {
-  for (let i = 0; i < Math.min(count, PROGRESS_MESSAGES.length); i++) {
-    await new Promise(r => setTimeout(r, 3000));
-    await sendWhatsApp(to, PROGRESS_MESSAGES[i]);
+const RESUME_PARSE_BATCHES = [
+  [
+    '📄 Scanning your resume…',
+    '🔍 Understanding your work experience…',
+    '✨ Identifying your skills…',
+  ],
+  [
+    '📋 Reading through your resume…',
+    '🧠 Analyzing your career journey…',
+    '📊 Extracting key achievements…',
+  ],
+  [
+    '📄 Got your file! Diving in…',
+    '💼 Reviewing your professional background…',
+    '🎯 Almost done reviewing your profile…',
+  ],
+];
+
+const RESUME_GEN_BATCHES = [
+  [
+    '📝 Putting your resume together…',
+    '🎨 Formatting it professionally…',
+    '✅ Almost done!',
+  ],
+  [
+    '⚙️ Generating your resume…',
+    '💼 Making it recruiter-ready…',
+    '🚀 Finishing up!',
+  ],
+  [
+    '🛠️ Building your resume…',
+    '📐 Applying professional layout…',
+    '✨ Final touches!',
+  ],
+];
+
+function pickBatch(batches) {
+  return batches[Math.floor(Math.random() * batches.length)];
+}
+
+async function sendFillerMessages(to, batches, delayMs = 2500) {
+  const batch = pickBatch(batches);
+  for (let i = 0; i < batch.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, delayMs));
+    await sendWhatsApp(to, batch[i]);
   }
+}
+
+// Legacy wrapper for resume parsing progress
+async function sendProgressMessages(to, count) {
+  await sendFillerMessages(to, RESUME_PARSE_BATCHES, 3000);
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are *ResumeWala* — a friendly, professional WhatsApp resume-building assistant for Indian job seekers. You help users create recruiter-ready resumes through natural conversation.
+const SYSTEM_PROMPT = `You are *ResumeWala* — a warm, professional WhatsApp resume-building assistant for Indian job seekers.
 
-You have TWO flows:
-1. *Improve existing resume* — user uploads a PDF/Word file, you extract and enhance it
-2. *Create fresh resume* — you collect all details through conversation
+YOUR APPROACH:
+You are a friendly career advisor chatting on WhatsApp. You do NOT behave like a rigid form. You have natural conversations.
 
-When a user messages you for the first time (hi, hello, or anything), warmly greet them and naturally ask whether they want to:
-- Upload an existing resume for improvement
-- Create a new resume from scratch
+FIRST MESSAGE:
+When a user messages for the first time, warmly greet them and ask whether they'd like to:
+- Upload an existing resume (PDF/Word) for improvement
+- Or create a new one from scratch by just talking to you
 
-Do NOT use numbered menus. Be conversational and warm, like a career advisor chatting on WhatsApp.
+Be conversational. Do NOT use numbered menus. Mention they can also send voice notes 🎤.
 
-If user wants to *improve* an existing resume, ask them to upload their PDF or Word file.
-If user wants to *create from scratch*, start collecting their details conversationally.
+CREATE-FROM-SCRATCH FLOW:
+Instead of asking rigid questions one by one, start with a single open-ended prompt like:
 
-Information to collect (for create flow):
-- Full name
-- Phone / Email (optional)
-- Location (city)
-- Target job role
-- Professional summary (you help write this)
-- Education (degree, college, year)
-- Work experience (title, company, duration, key responsibilities with measurable impact)
-- Skills (technical and soft)
-- Projects (optional)
-- Leadership roles (optional)
-- Certifications (optional)
-- Achievements (optional)
-- Languages spoken (optional)
+"Tell me about yourself — your education, work experience, skills, projects, achievements. Just share your journey and I'll turn it into a strong resume."
 
-Formatting rules for WhatsApp:
-- Use *asterisks* for bold on important words, names, section labels
-- Use - (hyphen) as bullet points for lists
-- Break long messages into short paragraphs with blank lines between them
-- Keep each message scannable — like a ChatGPT conversation on WhatsApp
+Then mention: "You can type your answer or send a voice note 🎤 — whatever's easier."
+
+After the user responds:
+1. Extract all the information they shared
+2. Assess how much you have — if you have enough for 60-70% of a one-page resume, tell them:
+   "I already have a solid foundation for your resume! I can generate it now if you'd like."
+   Then suggest additional details that would make it stronger (projects, metrics, tools, certifications).
+3. If information is still limited, ask 1-2 conversational follow-up questions about the gaps — NOT rigid form questions.
+
+FOLLOW-UP STYLE:
+- "Did you work on any interesting projects you'd like to highlight?"
+- "Any achievements you're especially proud of — awards, numbers, milestones?"
+- "What tools or technologies do you work with most?"
+- NEVER ask like: "Name:", "Address:", "Phone:"
+
+WHEN USER IS DONE:
+If the user says "that's all", "nothing else", "done", "generate", or similar — proceed to generate.
+Even if content is limited, generate the best possible resume with what you have.
+
+When ready to generate, say something like:
+"Great, I have what I need! Reply *YES* and I'll generate your resume."
+
+When user confirms YES/yes/y, respond with EXACTLY: GENERATE_RESUME
+Do not add any other text with GENERATE_RESUME.
+
+IMPROVE FLOW:
+If user wants to improve an existing resume, ask them to upload their PDF or Word file.
+
+VOICE NOTE REMINDERS:
+Occasionally (not every message) remind users they can send voice notes 🎤.
+
+FORMATTING RULES (critical):
+- Use *asterisks* for bold on key words, names, sections
+- Use - (hyphen) as bullet points
+- Break messages into short paragraphs with blank lines
+- Keep messages scannable — like ChatGPT on WhatsApp
 - Maximum 1-2 questions per message
-- If a response would be very long, focus on the most important point first
+- If response would be long, split into focused parts
 
-Conversation rules:
-- Be warm, encouraging, and concise
-- NEVER re-ask for information the user already provided
-- For experience, coach users to include *ACTION + IMPACT + METRIC*. Example: "Led a team of 5 to build payment gateway, reducing checkout drop-offs by 30%"
-- If user gives vague responsibilities, ask deeper with examples
-- Stay on topic — politely redirect off-topic messages back to the resume
-- Once you have core info (name, education, experience, skills), say something like: "I have everything I need! Reply *YES* to generate your resume."
-- When user confirms YES/yes/y, respond with exactly: GENERATE_RESUME
-- Do not add any other text when responding with GENERATE_RESUME`;
+CONVERSATION RULES:
+- Be warm, encouraging, concise
+- NEVER re-ask for information already provided
+- For experience, coach users on ACTION + IMPACT + METRIC
+- If user gives vague answers, probe deeper with examples
+- Stay on topic — redirect off-topic gently
+- Do NOT answer general knowledge, jokes, or unrelated questions`;
 
 const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text, extract ALL information thoroughly. Return in this EXACT plain-text format. Do not use JSON. Do not add explanation.
 
@@ -655,12 +727,6 @@ async function handleMediaMessage(from, mediaId, mimeType, caption) {
 
 // ─── Voice message handler ───────────────────────────────────────────────────
 
-const VOICE_LOADER_MESSAGES = [
-  'Got your voice note \uD83C\uDFA7',
-  'Listening carefully to what you said...',
-  'Understanding your instructions for the resume...',
-];
-
 async function handleAudioMessage(from, mediaId, mimeType) {
   try {
     const user = await db.findOrCreateUser(from);
@@ -673,10 +739,10 @@ async function handleAudioMessage(from, mediaId, mimeType) {
     }
     await db.incrementMessageCount(user.id);
 
-    // Send loader messages (non-blocking staged feedback)
-    sendVoiceLoaderMessages(from).catch(console.error);
+    // Step 1: Send filler messages FIRST (blocking — must complete before AI reply)
+    await sendFillerMessages(from, VOICE_FILLER_BATCHES, 1500);
 
-    // Download audio file
+    // Step 2: Download audio file
     let audioPath;
     try {
       audioPath = await downloadAudioFile(mediaId);
@@ -687,7 +753,7 @@ async function handleAudioMessage(from, mediaId, mimeType) {
       return;
     }
 
-    // Check file size (~2 min voice note is roughly 500KB-1MB in OGG)
+    // Check file size
     const stats = fs.statSync(audioPath);
     if (stats.size > 10 * 1024 * 1024) {
       fs.unlink(audioPath, () => {});
@@ -695,7 +761,7 @@ async function handleAudioMessage(from, mediaId, mimeType) {
       return;
     }
 
-    // Transcribe audio
+    // Step 3: Transcribe audio
     let transcription;
     try {
       transcription = await transcribeAudio(audioPath);
@@ -707,29 +773,23 @@ async function handleAudioMessage(from, mediaId, mimeType) {
       await sendWhatsApp(from, "I couldn't clearly understand the audio. Could you try sending the voice note again or type the message?");
       return;
     } finally {
-      // Clean up audio file
       fs.unlink(audioPath, () => {});
     }
 
-    // Handle empty transcription
     if (!transcription || !transcription.trim()) {
       await sendWhatsApp(from, "I couldn't clearly understand the audio. Could you try sending the voice note again or type the message?");
       return;
     }
 
-    // Feed transcription directly into the existing text pipeline
+    // Step 4: Process with AI — filler already sent, AI reply comes LAST
     const reply = await handleMessage(from, user, transcription.trim());
-    await sendWhatsApp(from, reply);
+    const chunks = splitMessage(reply);
+    for (const chunk of chunks) {
+      await sendWhatsApp(from, chunk);
+    }
   } catch (err) {
     console.error('HANDLE AUDIO ERROR:', err);
     await sendWhatsApp(from, 'Something went wrong processing your voice note. Please try again or type your message.').catch(console.error);
-  }
-}
-
-async function sendVoiceLoaderMessages(to) {
-  for (let i = 0; i < VOICE_LOADER_MESSAGES.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 1500));
-    await sendWhatsApp(to, VOICE_LOADER_MESSAGES[i]);
   }
 }
 
@@ -1042,7 +1102,8 @@ async function startFullResumeGeneration(from, user, resumeReq) {
 // ─── Async processors ────────────────────────────────────────────────────────
 
 async function processResumePreview(from, resumeRequestId) {
-  sendProgressMessages(from, 3).catch(console.error);
+  // Send filler messages FIRST, then process
+  await sendFillerMessages(from, RESUME_GEN_BATCHES, 2500);
 
   await extractAndSaveFromConversation(resumeRequestId);
   const data = await db.getResumeData(resumeRequestId);
@@ -1142,8 +1203,8 @@ async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
     return;
   }
 
-  // Send progress messages
-  sendProgressMessages(from, 5).catch(console.error);
+  // Send filler messages FIRST (blocking), then process
+  await sendFillerMessages(from, RESUME_PARSE_BATCHES, 2500);
 
   // Step 3: Claude extracts structured data (complete extraction)
   let resumeData = {};
