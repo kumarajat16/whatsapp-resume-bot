@@ -75,6 +75,9 @@ app.post("/webhook", async (req, res) => {
   console.log("Body:", JSON.stringify(req.body));
   res.sendStatus(200);
 
+  const from = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from;
+  if (!from) return;
+
   try {
 
     const PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
@@ -84,7 +87,7 @@ app.post("/webhook", async (req, res) => {
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
-        to: "919217232103",
+        to: from,
         type: "text",
         text: {
           body: "Bot is alive ✅ ResumeWala webhook working."
