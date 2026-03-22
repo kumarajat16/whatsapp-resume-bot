@@ -98,37 +98,52 @@ async function sendProgressMessages(to, count) {
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are ResumeWala, a WhatsApp resume-building assistant for Indian job seekers. You help users create professional, recruiter-ready resumes.
+const SYSTEM_PROMPT = `You are *ResumeWala* — a friendly, professional WhatsApp resume-building assistant for Indian job seekers. You help users create recruiter-ready resumes through natural conversation.
 
-Your job: collect resume information through natural conversation.
+You have TWO flows:
+1. *Improve existing resume* — user uploads a PDF/Word file, you extract and enhance it
+2. *Create fresh resume* — you collect all details through conversation
 
-Information to collect:
-1. Full name
-2. Phone / Email (optional)
-3. Location (city)
-4. Target job role (what jobs they are applying for)
-5. Professional summary (you will help write this)
-6. Education (degree, college, year)
-7. Work experience (title, company, duration, key responsibilities with measurable impact)
-8. Skills (technical and soft)
-9. Projects (optional)
-10. Leadership roles (optional)
-11. Certifications (optional)
-12. Achievements (optional)
-13. Languages spoken (optional)
+When a user messages you for the first time (hi, hello, or anything), warmly greet them and naturally ask whether they want to:
+- Upload an existing resume for improvement
+- Create a new resume from scratch
 
-Rules:
-- Be warm, encouraging, and concise. Messages must be SHORT and WhatsApp-friendly (under 1200 characters).
-- Use plain text only. No markdown headers. You may use *asterisks* for bold on WhatsApp.
-- Ask MAXIMUM 1-2 questions per message. If a question needs options, ask only 1 question.
-- NEVER re-ask for information the user already provided. Before asking, mentally check what you already know.
-- For experience bullets, coach users to include ACTION + IMPACT + METRIC. Example: "Led a team of 5 to build payment gateway, reducing checkout drop-offs by 30%"
-- If user gives vague responsibilities like "handled operations", ask deeper: "Can you share a specific achievement or number from that role? For example, team size, revenue impact, or a project you led?"
-- You MUST stay on topic. If the user tries to chat about non-resume topics, politely redirect: "Let's focus on your resume! [next question]"
-- Do NOT answer general knowledge questions, jokes, or off-topic requests.
-- Once you have the core info (name, education, experience, skills), say:
-  "I have everything I need! Reply *YES* to generate your resume."
-- When user says YES/yes/y, respond with exactly: GENERATE_RESUME
+Do NOT use numbered menus. Be conversational and warm, like a career advisor chatting on WhatsApp.
+
+If user wants to *improve* an existing resume, ask them to upload their PDF or Word file.
+If user wants to *create from scratch*, start collecting their details conversationally.
+
+Information to collect (for create flow):
+- Full name
+- Phone / Email (optional)
+- Location (city)
+- Target job role
+- Professional summary (you help write this)
+- Education (degree, college, year)
+- Work experience (title, company, duration, key responsibilities with measurable impact)
+- Skills (technical and soft)
+- Projects (optional)
+- Leadership roles (optional)
+- Certifications (optional)
+- Achievements (optional)
+- Languages spoken (optional)
+
+Formatting rules for WhatsApp:
+- Use *asterisks* for bold on important words, names, section labels
+- Use - (hyphen) as bullet points for lists
+- Break long messages into short paragraphs with blank lines between them
+- Keep each message scannable — like a ChatGPT conversation on WhatsApp
+- Maximum 1-2 questions per message
+- If a response would be very long, focus on the most important point first
+
+Conversation rules:
+- Be warm, encouraging, and concise
+- NEVER re-ask for information the user already provided
+- For experience, coach users to include *ACTION + IMPACT + METRIC*. Example: "Led a team of 5 to build payment gateway, reducing checkout drop-offs by 30%"
+- If user gives vague responsibilities, ask deeper with examples
+- Stay on topic — politely redirect off-topic messages back to the resume
+- Once you have core info (name, education, experience, skills), say something like: "I have everything I need! Reply *YES* to generate your resume."
+- When user confirms YES/yes/y, respond with exactly: GENERATE_RESUME
 - Do not add any other text when responding with GENERATE_RESUME`;
 
 const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text, extract ALL information thoroughly. Return in this EXACT plain-text format. Do not use JSON. Do not add explanation.
@@ -199,8 +214,7 @@ Rules:
 
 // ─── Welcome / Menu ──────────────────────────────────────────────────────────
 
-const WELCOME_MSG =
-  'Welcome to ResumeWala!\nBuild a professional resume in minutes.\n\nReply:\n1 - Improve existing resume (upload PDF/Word)\n2 - Create fresh resume\n\nType "menu" anytime to see this again.';
+const WELCOME_MSG = null; // No longer used — all conversations are AI-driven
 
 // ─── Structured text parser (enhanced) ───────────────────────────────────────
 
@@ -569,11 +583,37 @@ async function handleIncomingMessage(from, incomingMsg) {
     await db.incrementMessageCount(user.id);
 
     const reply = await handleMessage(from, user, incomingMsg);
-    await sendWhatsApp(from, reply);
+
+    // Split long messages into chunks for WhatsApp readability
+    const chunks = splitMessage(reply);
+    for (const chunk of chunks) {
+      await sendWhatsApp(from, chunk);
+    }
   } catch (err) {
     console.error('HANDLE INCOMING ERROR:', err);
     await sendWhatsApp(from, 'Something went wrong. Please try again.').catch(console.error);
   }
+}
+
+// Split long messages into WhatsApp-friendly chunks at paragraph boundaries
+function splitMessage(text, maxLen = 1100) {
+  if (!text || text.length <= maxLen) return [text];
+
+  const paragraphs = text.split(/\n\n+/);
+  const chunks = [];
+  let current = '';
+
+  for (const para of paragraphs) {
+    if (current && (current.length + para.length + 2) > maxLen) {
+      chunks.push(current.trim());
+      current = para;
+    } else {
+      current = current ? current + '\n\n' + para : para;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+
+  return chunks.length > 0 ? chunks : [text];
 }
 
 async function handleMediaMessage(from, mediaId, mimeType, caption) {
@@ -594,7 +634,7 @@ async function handleMediaMessage(from, mediaId, mimeType, caption) {
     ];
 
     if (!supportedTypes.includes(mimeType)) {
-      await sendWhatsApp(from, 'I can only read PDF or Word (.docx) files. Please send one of those, or type "2" to create from scratch.');
+      await sendWhatsApp(from, 'I can only read *PDF* or *Word (.docx)* files.\n\nPlease send one of those, or just tell me you\'d like to create a resume from scratch and I\'ll guide you through it!');
       return;
     }
 
@@ -605,7 +645,7 @@ async function handleMediaMessage(from, mediaId, mimeType, caption) {
 
     await processMediaUpload(from, user.id, buffer, tmpPath, mimeType).catch(err => {
       console.error('Media processing error:', err);
-      sendWhatsApp(from, 'Could not process your file. Please try again or type "2" to create from scratch.').catch(console.error);
+      sendWhatsApp(from, 'Could not process your file. Please try again or tell me you\'d like to create a resume from scratch.').catch(console.error);
     });
   } catch (err) {
     console.error('HANDLE MEDIA ERROR:', err);
@@ -838,39 +878,29 @@ if (RAZORPAY_ENABLED) {
 }
 
 
-// ─── Message handler (state machine) ─────────────────────────────────────────
+// ─── Message handler (AI-driven) ─────────────────────────────────────────────
 
 async function handleMessage(from, user, incomingMsg) {
   const lower = incomingMsg.toLowerCase().trim();
 
-  // Menu / restart
+  // Menu / restart — abandon current session and start fresh with AI
   if (lower === 'menu' || lower === 'restart' || lower === '0') {
     const active = await db.getActiveResumeRequest(user.id);
     if (active) await db.updateResumeRequestStatus(active.id, 'abandoned');
-    return WELCOME_MSG;
-  }
-
-  // Greetings — continue active or show menu
-  if (lower === 'hi' || lower === 'hello') {
-    const active = await db.getActiveResumeRequest(user.id);
-    if (active) return await handleActiveSession(from, user, active, incomingMsg);
-    return WELCOME_MSG;
+    const freshReq = await db.createResumeRequest(user.id, 'create');
+    await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
+    const reply = await askClaude(freshReq.id, 'Hi, I want to start over.');
+    return reply;
   }
 
   let resumeReq = await db.getActiveResumeRequest(user.id);
 
-  // No active request — show menu or start flow
+  // No active request — create one and let AI handle the conversation
   if (!resumeReq) {
-    if (lower === '1') {
-      resumeReq = await db.createResumeRequest(user.id, 'improve');
-      return 'Send your existing resume (PDF or Word .docx) and I will extract your details.';
-    }
-    if (lower === '2') {
-      resumeReq = await db.createResumeRequest(user.id, 'create');
-      const reply = await askClaude(resumeReq.id, 'Hi, I want to create a new resume from scratch.');
-      return reply;
-    }
-    return WELCOME_MSG;
+    resumeReq = await db.createResumeRequest(user.id, 'create');
+    await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
+    const reply = await askClaude(resumeReq.id, incomingMsg);
+    return reply;
   }
 
   return await handleActiveSession(from, user, resumeReq, incomingMsg);
@@ -883,7 +913,9 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
   // ─── awaiting_input: waiting for file (improve flow) or first message
   if (status === 'awaiting_input') {
     if (resumeReq.flow === 'improve') {
-      return 'Please send your resume file (PDF or Word). Or type "2" to create from scratch instead.';
+      // User said they want to improve but hasn't uploaded yet — remind via AI
+      const reply = await askClaude(resumeReq.id, incomingMsg);
+      return reply;
     }
     await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
     const reply = await askClaude(resumeReq.id, incomingMsg);
@@ -904,6 +936,13 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
       const reply = await askClaude(resumeReq.id,
         'I want to edit my resume. Ask me what section I want to change.');
       return reply;
+    }
+
+    // Check if user wants to upload a resume (switch to improve flow)
+    if (lower.includes('upload') || lower.includes('improve') || lower.includes('existing resume')) {
+      await db.updateResumeRequestFlow(resumeReq.id, 'improve');
+      await db.updateResumeRequestStatus(resumeReq.id, 'awaiting_input');
+      return 'Sure! Just send me your resume file — I accept *PDF* or *Word (.docx)* files.\n\nI\'ll read through it carefully and help you make it even better.';
     }
 
     // Normal conversation with Claude
@@ -932,12 +971,15 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     }
     if (lower === '3' || lower === 'new' || lower === 'restart') {
       await db.updateResumeRequestStatus(resumeReq.id, 'abandoned');
-      return WELCOME_MSG;
+      const freshReq = await db.createResumeRequest(user.id, 'create');
+      await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
+      const reply = await askClaude(freshReq.id, 'Hi, I want to start a new resume.');
+      return reply;
     }
     if (RAZORPAY_ENABLED) {
-      return 'Reply:\n1 - Get payment link\n2 - Edit something\n3 - Start over';
+      return 'Reply:\n*1* - Get payment link\n*2* - Edit something\n*3* - Start over';
     }
-    return 'Reply:\n1 - Download resume\n2 - Edit something\n3 - Start over';
+    return 'Reply:\n*1* - Download resume\n*2* - Edit something\n*3* - Start over';
   }
 
   // ─── paid: payment received, generating
@@ -950,12 +992,19 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     return 'Your resume is being generated. Please wait a moment...';
   }
 
-  // ─── completed
+  // ─── completed: start fresh with AI
   if (status === 'completed') {
-    return WELCOME_MSG;
+    const freshReq = await db.createResumeRequest(user.id, 'create');
+    await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
+    const reply = await askClaude(freshReq.id, incomingMsg);
+    return reply;
   }
 
-  return WELCOME_MSG;
+  // Fallback — start fresh with AI
+  const freshReq = await db.createResumeRequest(user.id, 'create');
+  await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
+  const reply = await askClaude(freshReq.id, incomingMsg);
+  return reply;
 }
 
 // ─── Resume generation triggers ──────────────────────────────────────────────
