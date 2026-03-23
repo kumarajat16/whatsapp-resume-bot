@@ -43,12 +43,14 @@ if (RAZORPAY_ENABLED) {
 
 const tempFiles = new Map();
 
+const FILE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 function storeTempFile(filePath, filename) {
   const token = crypto.randomUUID();
   setTimeout(() => {
     tempFiles.delete(token);
     fs.unlink(filePath, () => {});
-  }, 15 * 60 * 1000);
+  }, FILE_EXPIRY_MS);
   tempFiles.set(token, { filePath, filename });
   return token;
 }
@@ -77,6 +79,74 @@ async function sendWhatsApp(to, body) {
     const err = await res.text();
     console.error('[WA API ERROR]', res.status, err);
   }
+}
+
+// ─── WhatsApp media upload + document send ───────────────────────────────────
+
+const WA_MEDIA_URL = `https://graph.facebook.com/v22.0/${process.env.WA_PHONE_NUMBER_ID}/media`;
+
+async function uploadWhatsAppMedia(filePath, mimeType) {
+  const FormData = (await import('node-fetch')).FormData || globalThis.FormData;
+  const fileBuffer = fs.readFileSync(filePath);
+  const filename = path.basename(filePath);
+
+  // Use fetch with multipart form data
+  const boundary = '----FormBoundary' + crypto.randomUUID().replace(/-/g, '');
+  const bodyParts = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="messaging_product"\r\n\r\nwhatsapp\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${mimeType}\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
+  ];
+
+  const bodyStart = Buffer.from(bodyParts.join(''));
+  const bodyEnd = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const body = Buffer.concat([bodyStart, fileBuffer, bodyEnd]);
+
+  const res = await fetch(WA_MEDIA_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[WA MEDIA UPLOAD ERROR]', res.status, err);
+    return null;
+  }
+
+  const result = await res.json();
+  console.log('[WA MEDIA UPLOADED]', result.id);
+  return result.id; // media_id
+}
+
+async function sendWhatsAppDocument(to, mediaId, filename, caption) {
+  console.log('[OUT DOC]', to, '|', filename);
+  const res = await fetch(WA_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'document',
+      document: {
+        id: mediaId,
+        filename,
+        caption: caption || '',
+      },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[WA DOC SEND ERROR]', res.status, err);
+    return false;
+  }
+  return true;
 }
 
 // ─── Filler message batches (randomized per scenario) ────────────────────────
@@ -1160,12 +1230,37 @@ async function processFullResume(from, resumeRequestId) {
 
   await db.updateResumeRequestStatus(resumeRequestId, 'completed');
 
+  // Step 1: Send files directly on WhatsApp
+  const resumeName = (data.name || 'Resume').replace(/[^a-zA-Z0-9 ]/g, '').trim();
+
+  // Upload and send PDF
+  try {
+    const pdfMediaId = await uploadWhatsAppMedia(pdfPath, 'application/pdf');
+    if (pdfMediaId) {
+      await sendWhatsAppDocument(from, pdfMediaId, `${resumeName} - Resume.pdf`, '📄 Your resume (PDF)');
+    }
+  } catch (err) {
+    console.error('[PDF SEND ERROR]', err.message);
+  }
+
+  // Upload and send DOCX
+  try {
+    const docxMediaId = await uploadWhatsAppMedia(docxPath, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    if (docxMediaId) {
+      await sendWhatsAppDocument(from, docxMediaId, `${resumeName} - Resume.docx`, '📝 Your resume (Word)');
+    }
+  } catch (err) {
+    console.error('[DOCX SEND ERROR]', err.message);
+  }
+
+  // Step 2: Also send download links as fallback
   const msg =
-    'Your resume is ready!\n\n' +
-    'Download Word: ' + docxUrl + '\n' +
-    'Download PDF: ' + pdfUrl + '\n\n' +
-    '(Links expire in 15 minutes)\n\n' +
-    'Type "menu" to create another resume.';
+    '✅ *Your resume is ready!*\n\n' +
+    'I\'ve sent the files above. You can also download here:\n\n' +
+    '📄 PDF: ' + pdfUrl + '\n' +
+    '📝 Word: ' + docxUrl + '\n\n' +
+    '_(Links valid for 24 hours)_\n\n' +
+    'Type *menu* to create another resume.';
 
   await sendWhatsApp(from, msg);
 }
@@ -1402,24 +1497,49 @@ async function generateDocx(data) {
       spacing: { before: 400, after: 200 },
     });
 
-  // ── Bullet paragraph with hanging indent and strategic bold
+  // ── Action verbs to bold at start of bullets
+  const ACTION_VERBS = new Set([
+    'led', 'built', 'developed', 'optimized', 'launched', 'revamped', 'managed',
+    'created', 'implemented', 'drove', 'spearheaded', 'designed', 'delivered',
+    'established', 'achieved', 'increased', 'reduced', 'improved', 'generated',
+    'streamlined', 'orchestrated', 'pioneered', 'transformed', 'automated',
+    'negotiated', 'executed', 'analyzed', 'mentored', 'directed', 'coordinated',
+    'facilitated', 'initiated', 'secured', 'scaled', 'resolved', 'introduced',
+    'collaborated', 'supervised', 'oversaw', 'consolidated', 'restructured',
+  ]);
+
+  // ── Bullet paragraph with hanging indent, bold action verbs + metrics
   const bulletParagraph = (text) => {
-    // Bold metric phrases: number + nearby context (e.g. "35% growth", "₹5L+ revenue", "10,000+ customers")
-    const metricPattern = /((?:[₹$])\s*\d+[\d,.]*\s*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh|crore))?\s*\+?\s*(?:revenue|users|customers|leads|growth|improvement|reduction|increase)?|\d+[\d,.]*\s*[%xX]+(?:\s+(?:growth|improvement|increase|reduction|conversion|revenue|ROI|margin))?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|members|participants|team|employees|stores|cities|brands|clients|partners|campaigns|experiments|projects|products|months|years|weeks|days|cr|lakh|Cr|Lakh|crore|million|billion|[KkMm])\w*)/gi;
-    const parts = text.split(metricPattern);
     const runs = [];
+
+    // Step 1: Bold the leading action verb
+    const firstSpaceIdx = text.indexOf(' ');
+    let remaining = text;
+    if (firstSpaceIdx > 0) {
+      const firstWord = text.slice(0, firstSpaceIdx);
+      if (ACTION_VERBS.has(firstWord.toLowerCase())) {
+        runs.push(new TextRun({ text: firstWord, bold: true, size: 21, font: 'Calibri' }));
+        remaining = text.slice(firstSpaceIdx);
+      }
+    }
+
+    // Step 2: Bold metric phrases in remaining text
+    const metricPattern = /((?:[₹$])\s*\d+[\d,.]*\s*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh|crore))?\s*\+?\s*(?:revenue|users|customers|leads|growth|improvement|reduction|increase)?|\d+[\d,.]*\s*[%xX]+(?:\s+(?:growth|improvement|increase|reduction|conversion|revenue|ROI|margin))?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|members|participants|team|employees|stores|cities|brands|clients|partners|campaigns|experiments|projects|products|months|years|weeks|days|cr|lakh|Cr|Lakh|crore|million|billion|[KkMm])\w*)/gi;
+    const parts = remaining.split(metricPattern);
     for (const part of parts) {
       if (!part) continue;
+      metricPattern.lastIndex = 0;
       if (metricPattern.test(part)) {
-        metricPattern.lastIndex = 0; // reset regex state
+        metricPattern.lastIndex = 0;
         runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
       } else {
         runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
       }
     }
+
     return new Paragraph({
       children: [new TextRun({ text: '\u2022  ', size: 21, font: 'Calibri' }), ...runs],
-      spacing: { after: 60, line: 264 },
+      spacing: { after: 80, line: 276 },
       indent: { left: 360, hanging: 180 },
     });
   };
@@ -1493,14 +1613,15 @@ async function generateDocx(data) {
         }
 
         children.push(
-          new Paragraph({ children: headerRuns, spacing: { before: 180, after: 40 } })
+          new Paragraph({ children: headerRuns, spacing: { before: 200, after: 60 } })
         );
 
         if (exp.description) {
           children.push(
             new Paragraph({
               children: [new TextRun({ text: exp.description, size: 20, font: 'Calibri', color: '555555', italics: true })],
-              spacing: { after: 120 },
+              spacing: { after: 80 },
+              indent: { left: 0 },
             })
           );
         }
@@ -1510,6 +1631,11 @@ async function generateDocx(data) {
 
         for (const resp of responsibilities) {
           children.push(bulletParagraph(String(resp)));
+        }
+
+        // Add spacing after each experience entry
+        if (responsibilities.length > 0) {
+          children.push(new Paragraph({ spacing: { after: 120 } }));
         }
       } else {
         children.push(bulletParagraph(String(exp)));
@@ -1729,18 +1855,48 @@ async function generatePdf(data) {
       doc.moveDown(0.35);
     };
 
-    // Helper: bullet point with hanging indent
+    // Helper: bullet point with hanging indent and bold action verbs + metrics
     const BULLET_INDENT = 15;
+    const PDF_ACTION_VERBS = new Set([
+      'led', 'built', 'developed', 'optimized', 'launched', 'revamped', 'managed',
+      'created', 'implemented', 'drove', 'spearheaded', 'designed', 'delivered',
+      'established', 'achieved', 'increased', 'reduced', 'improved', 'generated',
+      'streamlined', 'orchestrated', 'pioneered', 'transformed', 'automated',
+      'negotiated', 'executed', 'analyzed', 'mentored', 'directed', 'coordinated',
+      'facilitated', 'initiated', 'secured', 'scaled', 'resolved', 'introduced',
+      'collaborated', 'supervised', 'oversaw', 'consolidated', 'restructured',
+    ]);
+    const pdfMetricPattern = /(\d+[\d,.]*\s*[%xX+]+(?:\s+\w+)?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|team|employees|stores|cities|months|years|cr|lakh|million|billion|[KkMm])\w*|[₹$]\s*\d+[\d,.]*\w*)/gi;
+
     const pdfBullet = (text) => {
       const startX = 50 + BULLET_INDENT;
       const bulletWidth = doc.font('Helvetica').fontSize(10).widthOfString('\u2022  ');
+      const contentX = startX + bulletWidth;
+      const contentWidth = 545 - contentX;
+
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
         .text('\u2022', startX, doc.y);
       doc.moveUp();
-      doc.text(text, startX + bulletWidth, doc.y, {
-        width: 545 - startX - bulletWidth,
-        lineGap: 2,
-      });
+
+      // Check for leading action verb
+      const firstSpaceIdx = text.indexOf(' ');
+      let textToPrint = text;
+      if (firstSpaceIdx > 0) {
+        const firstWord = text.slice(0, firstSpaceIdx);
+        if (PDF_ACTION_VERBS.has(firstWord.toLowerCase())) {
+          // Print bold action verb inline
+          doc.font('Helvetica-Bold').fontSize(10).fillColor(BLACK)
+            .text(firstWord, contentX, doc.y, { continued: true, width: contentWidth, lineGap: 2 });
+          textToPrint = text.slice(firstSpaceIdx);
+          // Print the rest
+          doc.font('Helvetica').fontSize(10).fillColor(BLACK)
+            .text(textToPrint, { width: contentWidth, lineGap: 2 });
+          return;
+        }
+      }
+
+      doc.font('Helvetica').fontSize(10).fillColor(BLACK)
+        .text(text, contentX, doc.y, { width: contentWidth, lineGap: 2 });
     };
 
     // Summary
