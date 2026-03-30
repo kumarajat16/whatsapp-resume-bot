@@ -911,17 +911,67 @@ app.get('/resume/:token', (req, res) => {
 app.get('/payment-success', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful - ResumeWala</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1846252229408387');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Code -->
 <style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f0f8f0}
 .card{background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);text-align:center;max-width:400px}
 h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</style></head>
 <body><div class="card"><h1>Payment Successful!</h1>
 <p>Your resume is being generated and will be sent to your WhatsApp shortly.</p>
-<p style="margin-top:20px;color:#888;font-size:14px">You can close this page.</p></div></body></html>`);
+<p style="margin-top:20px;color:#888;font-size:14px">You can close this page.</p></div>
+<!-- Meta Pixel Purchase Event - fires once per unique payment -->
+<script>
+(function(){
+  var params = new URLSearchParams(window.location.search);
+  var paymentId = params.get('razorpay_payment_id');
+  var status = params.get('razorpay_payment_link_status');
+  if (paymentId && status === 'paid') {
+    var key = 'fbq_purchase_' + paymentId;
+    if (!localStorage.getItem(key)) {
+      fbq('track', 'Purchase', { value: 49, currency: 'INR' });
+      localStorage.setItem(key, '1');
+    }
+  }
+})();
+</script>
+</body></html>`);
 });
 
 app.get('/privacy', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ResumeWala Privacy Policy</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1846252229408387');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Code -->
 <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#333;line-height:1.7}
 h1{color:#1F3864;font-size:24px}h2{color:#1F3864;font-size:18px;margin-top:30px}p{margin:10px 0}
 .footer{margin-top:40px;color:#888;font-size:13px}</style></head>
