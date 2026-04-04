@@ -116,6 +116,28 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+
+  // Ad tracking table: maps short IDs to fbclid values
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ad_tracking (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      short_id TEXT UNIQUE NOT NULL,
+      fbclid TEXT,
+      phone_number TEXT,
+      source TEXT DEFAULT 'meta_ads',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  // Add ad tracking columns to users table
+  const addUserCol = async (col, type) => {
+    try {
+      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+    } catch (_) { /* column already exists */ }
+  };
+  await addUserCol('ad_short_id', 'TEXT');
+  await addUserCol('fbclid', 'TEXT');
+  await addUserCol('ad_source', 'TEXT');
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -303,6 +325,44 @@ async function getPaymentByResumeRequest(resumeRequestId) {
   return result.rows[0] || null;
 }
 
+// ─── Ad tracking helpers ──────────────────────────────────────────────────
+
+async function createAdTracking(shortId, fbclid) {
+  await pool.query(
+    'INSERT INTO ad_tracking (short_id, fbclid) VALUES ($1, $2) ON CONFLICT (short_id) DO NOTHING',
+    [shortId, fbclid || null]
+  );
+}
+
+async function getAdTracking(shortId) {
+  const result = await pool.query(
+    'SELECT * FROM ad_tracking WHERE short_id = $1',
+    [shortId]
+  );
+  return result.rows[0] || null;
+}
+
+async function attachAdTrackingToUser(phoneNumber, shortId, fbclid) {
+  await pool.query(
+    `UPDATE users SET ad_short_id = $1, fbclid = $2, ad_source = 'meta_ads', updated_at = NOW()
+     WHERE phone_number = $3`,
+    [shortId, fbclid || null, phoneNumber]
+  );
+  // Also update the ad_tracking record with the phone number
+  await pool.query(
+    'UPDATE ad_tracking SET phone_number = $1 WHERE short_id = $2',
+    [phoneNumber, shortId]
+  );
+}
+
+async function getUserAdTracking(phoneNumber) {
+  const result = await pool.query(
+    'SELECT ad_short_id, fbclid, ad_source FROM users WHERE phone_number = $1',
+    [phoneNumber]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   pool,
   initDb,
@@ -322,4 +382,8 @@ module.exports = {
   createPayment,
   updatePaymentByLinkId,
   getPaymentByResumeRequest,
+  createAdTracking,
+  getAdTracking,
+  attachAdTrackingToUser,
+  getUserAdTracking,
 };

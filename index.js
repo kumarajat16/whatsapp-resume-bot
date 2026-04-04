@@ -724,6 +724,23 @@ async function handleIncomingMessage(from, incomingMsg) {
     }
     await db.incrementMessageCount(user.id);
 
+    // Extract ad tracking Ref: XXXXX from message
+    const refMatch = incomingMsg.match(/Ref:\s*([A-Z0-9]{4,8})/i);
+    if (refMatch) {
+      const shortId = refMatch[1].toUpperCase();
+      try {
+        const tracking = await db.getAdTracking(shortId);
+        if (tracking) {
+          await db.attachAdTrackingToUser(from, shortId, tracking.fbclid);
+          console.log('[AD_TRACKING] Attached', shortId, 'to user', from);
+        }
+      } catch (trackErr) {
+        console.error('[AD_TRACKING] Resolve error:', trackErr);
+      }
+      // Strip the Ref line so the AI doesn't see it
+      incomingMsg = incomingMsg.replace(/\n*Ref:\s*[A-Z0-9]{4,8}/i, '').trim();
+    }
+
     const reply = await handleMessage(from, user, incomingMsg);
 
     // Split long messages into chunks for WhatsApp readability
@@ -908,8 +925,30 @@ app.get('/resume/:token', (req, res) => {
   });
 });
 
-app.get('/start', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
+// ─── Short tracking ID generator ────────────────────────────────────────────
+function generateShortId() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  const bytes = crypto.randomBytes(6);
+  for (let i = 0; i < 6; i++) {
+    result += chars[bytes[i] % chars.length];
+  }
+  return result;
+}
+
+app.get('/start', async (req, res) => {
+  try {
+    const fbclid = req.query.fbclid || null;
+    const shortId = generateShortId();
+
+    // Store the fbclid → shortId mapping
+    await db.createAdTracking(shortId, fbclid);
+    console.log('[AD_TRACKING] Created:', shortId, fbclid ? 'fbclid=' + fbclid.slice(0, 20) + '...' : 'no fbclid');
+
+    const waText = encodeURIComponent('Hi ResumeWala, I want to create my professional resume.\n\nRef: ' + shortId);
+    const waUrl = 'https://wa.me/919217232103?text=' + waText;
+
+    res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Meta Pixel Code -->
 <script>
@@ -921,12 +960,12 @@ n.queue=[];t=b.createElement(e);t.async=!0;
 t.src=v;s=b.getElementsByTagName(e)[0];
 s.parentNode.insertBefore(t,s)}(window, document,'script',
 'https://connect.facebook.net/en_US/fbevents.js');
-fbq('init', '1846252229408387');
+fbq('init', '2164200404396165');
 fbq('track', 'PageView');
 fbq('track', 'Contact');
 </script>
 <noscript><img height="1" width="1" style="display:none"
-src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
 /></noscript>
 <!-- End Meta Pixel Code -->
 <style>
@@ -945,18 +984,24 @@ p{color:#555;font-size:16px;line-height:1.5;margin-bottom:20px}
 <div class="spinner"></div>
 <h1>Opening WhatsApp...</h1>
 <p>We're connecting you to ResumeWala to create your professional resume.</p>
-<a class="btn" href="https://wa.me/919217232103?text=Hi%20ResumeWala%2C%20I%20want%20to%20create%20my%20resume">Start Chat on WhatsApp</a>
+<a class="btn" href="${waUrl}">Start Chat on WhatsApp</a>
 <p class="sub">If you're not redirected, tap the button above.</p>
 </div>
 <script>
 setTimeout(function(){
-  window.location.href="https://wa.me/919217232103?text=Hi%20ResumeWala%2C%20I%20want%20to%20create%20my%20resume";
+  window.location.href="${waUrl}";
 },500);
 </script>
 </body></html>`);
+  } catch (err) {
+    console.error('[AD_TRACKING] Error:', err);
+    // Fallback: redirect without tracking
+    res.redirect('https://wa.me/919217232103?text=' + encodeURIComponent('Hi ResumeWala, I want to create my professional resume.'));
+  }
 });
 
 app.get('/payment-success', (req, res) => {
+  const purchaseValue = PAYMENT_AMOUNT / 100;
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful - ResumeWala</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Meta Pixel Code -->
@@ -969,11 +1014,11 @@ n.queue=[];t=b.createElement(e);t.async=!0;
 t.src=v;s=b.getElementsByTagName(e)[0];
 s.parentNode.insertBefore(t,s)}(window, document,'script',
 'https://connect.facebook.net/en_US/fbevents.js');
-fbq('init', '1846252229408387');
+fbq('init', '2164200404396165');
 fbq('track', 'PageView');
 </script>
 <noscript><img height="1" width="1" style="display:none"
-src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
 /></noscript>
 <!-- End Meta Pixel Code -->
 <style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f0f8f0}
@@ -991,7 +1036,7 @@ h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</st
   if (paymentId && status === 'paid') {
     var key = 'fbq_purchase_' + paymentId;
     if (!localStorage.getItem(key)) {
-      fbq('track', 'Purchase', { value: 49, currency: 'INR' });
+      fbq('track', 'Purchase', { value: ${purchaseValue}, currency: 'INR' });
       localStorage.setItem(key, '1');
     }
   }
@@ -1013,11 +1058,11 @@ n.queue=[];t=b.createElement(e);t.async=!0;
 t.src=v;s=b.getElementsByTagName(e)[0];
 s.parentNode.insertBefore(t,s)}(window, document,'script',
 'https://connect.facebook.net/en_US/fbevents.js');
-fbq('init', '1846252229408387');
+fbq('init', '2164200404396165');
 fbq('track', 'PageView');
 </script>
 <noscript><img height="1" width="1" style="display:none"
-src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
 /></noscript>
 <!-- End Meta Pixel Code -->
 <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#333;line-height:1.7}
@@ -1554,6 +1599,10 @@ async function createPaymentLink(from, resumeReq) {
   if (!razorpay) return 'Payment is not configured. Please contact support.';
 
   try {
+    // Look up ad tracking for this user
+    const userTracking = await db.getUserAdTracking(from);
+    const refParam = userTracking?.ad_short_id ? '?ref=' + userTracking.ad_short_id : '';
+
     const link = await razorpay.paymentLink.create({
       amount: PAYMENT_AMOUNT,
       currency: 'INR',
@@ -1561,8 +1610,10 @@ async function createPaymentLink(from, resumeReq) {
       notes: {
         resume_request_id: resumeReq.id,
         phone: from,
+        ad_short_id: userTracking?.ad_short_id || '',
+        fbclid: userTracking?.fbclid || '',
       },
-      callback_url: (process.env.BASE_URL || '') + '/payment-success',
+      callback_url: (process.env.BASE_URL || '') + '/payment-success' + refParam,
       callback_method: 'get',
     });
 
