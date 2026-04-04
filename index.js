@@ -948,6 +948,12 @@ app.get('/start', async (req, res) => {
     const waText = encodeURIComponent('Hi ResumeWala, I want to create my professional resume.\n\nRef: ' + shortId);
     const waUrl = 'https://wa.me/919217232103?text=' + waText;
 
+    // Sanitize fbclid for safe JS injection (alphanumeric, underscores, hyphens only)
+    const safeFbclid = fbclid ? fbclid.replace(/[^a-zA-Z0-9_\-]/g, '') : '';
+    const pageViewCall = safeFbclid
+      ? `fbq('track', 'PageView', { fbclid: '${safeFbclid}' });`
+      : `fbq('track', 'PageView');`;
+
     res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Meta Pixel Code -->
@@ -961,8 +967,7 @@ t.src=v;s=b.getElementsByTagName(e)[0];
 s.parentNode.insertBefore(t,s)}(window, document,'script',
 'https://connect.facebook.net/en_US/fbevents.js');
 fbq('init', '2164200404396165');
-fbq('track', 'PageView');
-fbq('track', 'Contact');
+${pageViewCall}
 </script>
 <noscript><img height="1" width="1" style="display:none"
 src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
@@ -1000,8 +1005,31 @@ setTimeout(function(){
   }
 });
 
-app.get('/payment-success', (req, res) => {
+app.get('/payment-success', async (req, res) => {
   const purchaseValue = PAYMENT_AMOUNT / 100;
+
+  // Resolve fbclid from ref parameter
+  let safeFbclid = '';
+  const ref = req.query.ref;
+  if (ref) {
+    try {
+      const tracking = await db.getAdTracking(ref);
+      if (tracking?.fbclid) {
+        safeFbclid = tracking.fbclid.replace(/[^a-zA-Z0-9_\-]/g, '');
+      }
+    } catch (err) {
+      console.error('[AD_TRACKING] Resolve error on payment-success:', err);
+    }
+  }
+
+  // Build fbclid JS snippets for pixel events
+  const pageViewCall = safeFbclid
+    ? `fbq('track', 'PageView', { fbclid: '${safeFbclid}' });`
+    : `fbq('track', 'PageView');`;
+  const purchaseCall = safeFbclid
+    ? `fbq('track', 'Purchase', { value: ${purchaseValue}, currency: 'INR', fbclid: '${safeFbclid}' });`
+    : `fbq('track', 'Purchase', { value: ${purchaseValue}, currency: 'INR' });`;
+
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful - ResumeWala</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Meta Pixel Code -->
@@ -1015,7 +1043,7 @@ t.src=v;s=b.getElementsByTagName(e)[0];
 s.parentNode.insertBefore(t,s)}(window, document,'script',
 'https://connect.facebook.net/en_US/fbevents.js');
 fbq('init', '2164200404396165');
-fbq('track', 'PageView');
+${pageViewCall}
 </script>
 <noscript><img height="1" width="1" style="display:none"
 src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
@@ -1036,7 +1064,7 @@ h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</st
   if (paymentId && status === 'paid') {
     var key = 'fbq_purchase_' + paymentId;
     if (!localStorage.getItem(key)) {
-      fbq('track', 'Purchase', { value: ${purchaseValue}, currency: 'INR' });
+      ${purchaseCall}
       localStorage.setItem(key, '1');
     }
   }
