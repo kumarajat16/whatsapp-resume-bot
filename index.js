@@ -908,6 +908,54 @@ app.get('/resume/:token', (req, res) => {
   });
 });
 
+app.get('/start', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1846252229408387');
+fbq('track', 'PageView');
+fbq('track', 'Contact');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1846252229408387&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Code -->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f0f8f0;padding:20px}
+.card{background:white;padding:40px 30px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);text-align:center;max-width:400px;width:100%}
+h1{color:#1F3864;font-size:22px;margin-bottom:12px}
+p{color:#555;font-size:16px;line-height:1.5;margin-bottom:20px}
+.spinner{display:inline-block;width:28px;height:28px;border:3px solid #ddd;border-top-color:#25D366;border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn{display:inline-block;background:#25D366;color:white;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:16px;font-weight:bold}
+.btn:active{background:#1da851}
+.sub{color:#999;font-size:13px;margin-top:16px}
+</style></head>
+<body><div class="card">
+<div class="spinner"></div>
+<h1>Opening WhatsApp...</h1>
+<p>We're connecting you to ResumeWala to create your professional resume.</p>
+<a class="btn" href="https://wa.me/919217232103?text=Hi%20ResumeWala%2C%20I%20want%20to%20create%20my%20resume">Start Chat on WhatsApp</a>
+<p class="sub">If you're not redirected, tap the button above.</p>
+</div>
+<script>
+setTimeout(function(){
+  window.location.href="https://wa.me/919217232103?text=Hi%20ResumeWala%2C%20I%20want%20to%20create%20my%20resume";
+},500);
+</script>
+</body></html>`);
+});
+
 app.get('/payment-success', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful - ResumeWala</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
