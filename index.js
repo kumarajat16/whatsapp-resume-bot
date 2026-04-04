@@ -937,24 +937,35 @@ function generateShortId() {
 }
 
 app.get('/start', async (req, res) => {
+  // Safely read params — never throw
+  const fbclid = (req.query.fbclid && typeof req.query.fbclid === 'string') ? req.query.fbclid : '';
+  let shortId = '';
+  let safeFbclid = '';
+
+  // Try to create tracking, but never block page render
   try {
-    const fbclid = req.query.fbclid || null;
-    const shortId = generateShortId();
+    if (fbclid) {
+      shortId = generateShortId();
+      await db.createAdTracking(shortId, fbclid);
+      safeFbclid = fbclid.replace(/[^a-zA-Z0-9_\-]/g, '');
+      console.log('[AD_TRACKING] Created:', shortId, 'fbclid=' + fbclid.slice(0, 20) + '...');
+    }
+  } catch (err) {
+    console.error('[AD_TRACKING] Store error (non-fatal):', err.message);
+    shortId = '';
+    safeFbclid = '';
+  }
 
-    // Store the fbclid → shortId mapping
-    await db.createAdTracking(shortId, fbclid);
-    console.log('[AD_TRACKING] Created:', shortId, fbclid ? 'fbclid=' + fbclid.slice(0, 20) + '...' : 'no fbclid');
+  const waMessage = shortId
+    ? 'Hi ResumeWala, I want to create my professional resume.\n\nRef: ' + shortId
+    : 'Hi ResumeWala, I want to create my professional resume.';
+  const waUrl = 'https://wa.me/919217232103?text=' + encodeURIComponent(waMessage);
 
-    const waText = encodeURIComponent('Hi ResumeWala, I want to create my professional resume.\n\nRef: ' + shortId);
-    const waUrl = 'https://wa.me/919217232103?text=' + waText;
+  const pageViewCall = safeFbclid
+    ? `fbq('track', 'PageView', { fbclid: '${safeFbclid}' });`
+    : `fbq('track', 'PageView');`;
 
-    // Sanitize fbclid for safe JS injection (alphanumeric, underscores, hyphens only)
-    const safeFbclid = fbclid ? fbclid.replace(/[^a-zA-Z0-9_\-]/g, '') : '';
-    const pageViewCall = safeFbclid
-      ? `fbq('track', 'PageView', { fbclid: '${safeFbclid}' });`
-      : `fbq('track', 'PageView');`;
-
-    res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
+  res.send(`<!DOCTYPE html><html><head><title>ResumeWala - Start on WhatsApp</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Meta Pixel Code -->
 <script>
@@ -998,31 +1009,27 @@ setTimeout(function(){
 },500);
 </script>
 </body></html>`);
-  } catch (err) {
-    console.error('[AD_TRACKING] Error:', err);
-    // Fallback: redirect without tracking
-    res.redirect('https://wa.me/919217232103?text=' + encodeURIComponent('Hi ResumeWala, I want to create my professional resume.'));
-  }
 });
 
 app.get('/payment-success', async (req, res) => {
   const purchaseValue = PAYMENT_AMOUNT / 100;
 
-  // Resolve fbclid from ref parameter
+  // Safely resolve fbclid from ref — never block page render
   let safeFbclid = '';
-  const ref = req.query.ref;
-  if (ref) {
-    try {
+  try {
+    const ref = (req.query.ref && typeof req.query.ref === 'string') ? req.query.ref : '';
+    if (ref) {
       const tracking = await db.getAdTracking(ref);
-      if (tracking?.fbclid) {
+      if (tracking && tracking.fbclid) {
         safeFbclid = tracking.fbclid.replace(/[^a-zA-Z0-9_\-]/g, '');
       }
-    } catch (err) {
-      console.error('[AD_TRACKING] Resolve error on payment-success:', err);
     }
+  } catch (err) {
+    console.error('[AD_TRACKING] Resolve error on payment-success (non-fatal):', err.message);
+    safeFbclid = '';
   }
 
-  // Build fbclid JS snippets for pixel events
+  // Build pixel calls — always safe, with or without fbclid
   const pageViewCall = safeFbclid
     ? `fbq('track', 'PageView', { fbclid: '${safeFbclid}' });`
     : `fbq('track', 'PageView');`;
@@ -1627,9 +1634,20 @@ async function createPaymentLink(from, resumeReq) {
   if (!razorpay) return 'Payment is not configured. Please contact support.';
 
   try {
-    // Look up ad tracking for this user
-    const userTracking = await db.getUserAdTracking(from);
-    const refParam = userTracking?.ad_short_id ? '?ref=' + userTracking.ad_short_id : '';
+    // Look up ad tracking for this user — never let this block payment
+    let refParam = '';
+    let adShortId = '';
+    let adFbclid = '';
+    try {
+      const userTracking = await db.getUserAdTracking(from);
+      if (userTracking?.ad_short_id) {
+        refParam = '?ref=' + userTracking.ad_short_id;
+        adShortId = userTracking.ad_short_id;
+        adFbclid = userTracking.fbclid || '';
+      }
+    } catch (trackErr) {
+      console.error('[AD_TRACKING] Lookup error in createPaymentLink (non-fatal):', trackErr.message);
+    }
 
     const link = await razorpay.paymentLink.create({
       amount: PAYMENT_AMOUNT,
@@ -1638,8 +1656,8 @@ async function createPaymentLink(from, resumeReq) {
       notes: {
         resume_request_id: resumeReq.id,
         phone: from,
-        ad_short_id: userTracking?.ad_short_id || '',
-        fbclid: userTracking?.fbclid || '',
+        ad_short_id: adShortId,
+        fbclid: adFbclid,
       },
       callback_url: (process.env.BASE_URL || '') + '/payment-success' + refParam,
       callback_method: 'get',
