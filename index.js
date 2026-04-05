@@ -669,11 +669,11 @@ app.post("/webhook", (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
-    // Log for debugging
-    console.log("[WEBHOOK]", JSON.stringify(req.body, null, 2));
+    // Skip WhatsApp status updates (sent/delivered/read) to avoid log spam
+    if (!value || value.statuses) return;
 
-    // Only process actual incoming messages (not status updates)
-    const message = value?.messages?.[0];
+    // Only process actual incoming messages
+    const message = value.messages?.[0];
     if (!message) return;
 
     const from = message.from; // phone number without +
@@ -688,8 +688,7 @@ app.post("/webhook", (req, res) => {
     } else if (msgType === 'audio') {
       const mediaId = message.audio?.id;
       const mimeType = message.audio?.mime_type || 'audio/ogg';
-      console.log('[IN]', from, '| [VOICE:', mimeType, ']');
-      console.log('[VOICE_RECEIVED]', from);
+      console.log('[IN]', from, '| [VOICE]');
       handleAudioMessage(from, mediaId, mimeType).catch(err => {
         console.error('AUDIO HANDLER ERROR:', err);
       });
@@ -698,12 +697,10 @@ app.post("/webhook", (req, res) => {
       const mediaId = message.document?.id || message.image?.id;
       const mimeType = message.document?.mime_type || message.image?.mime_type || '';
       const caption = message.document?.caption || message.image?.caption || '';
-      console.log('[IN]', from, '| [MEDIA:', mimeType, ']');
+      console.log('[IN]', from, '| [MEDIA]');
       handleMediaMessage(from, mediaId, mimeType, caption).catch(err => {
         console.error('MEDIA HANDLER ERROR:', err);
       });
-    } else {
-      console.log('[IN]', from, '| [UNSUPPORTED:', msgType, ']');
     }
   } catch (err) {
     console.error('WEBHOOK PROCESSING ERROR:', err);
@@ -833,7 +830,6 @@ async function handleAudioMessage(from, mediaId, mimeType) {
     let audioPath;
     try {
       audioPath = await downloadAudioFile(mediaId);
-      console.log('[VOICE_DOWNLOADED]', from, audioPath);
     } catch (err) {
       console.error('[VOICE_DOWNLOAD_ERROR]', err.message);
       await sendWhatsApp(from, 'Could not download your voice note. Please try sending it again or type your message instead.');
@@ -852,8 +848,6 @@ async function handleAudioMessage(from, mediaId, mimeType) {
     let transcription;
     try {
       transcription = await transcribeAudio(audioPath);
-      console.log('[VOICE_TRANSCRIBED]', from);
-      console.log('[TRANSCRIPTION_TEXT]', transcription);
     } catch (err) {
       console.error('[VOICE_TRANSCRIPTION_ERROR]', err.message);
       fs.unlink(audioPath, () => {});
@@ -1132,9 +1126,6 @@ h1{color:#1F3864;font-size:24px}h2{color:#1F3864;font-size:18px;margin-top:30px}
 // Razorpay webhook
 if (RAZORPAY_ENABLED) {
   app.post('/razorpay-webhook', async (req, res) => {
-    console.log('RAZORPAY WEBHOOK RECEIVED');
-    console.log('Event:', req.body.event);
-    console.log('Payload:', JSON.stringify(req.body));
     try {
       const event = req.body.event;
       let notes, paymentLinkId, paymentId;
@@ -1171,7 +1162,7 @@ if (RAZORPAY_ENABLED) {
         }
 
         await db.updateResumeRequestStatus(resumeRequestId, 'paid');
-        console.log('Payment confirmed. Generating resume for:', phone);
+        console.log('Payment verified:', paymentId);
         processFullResume(phone, resumeRequestId).catch(err => {
           console.error('Post-payment resume generation error:', err);
         });
@@ -1394,6 +1385,8 @@ async function processFullResume(from, resumeRequestId) {
     return;
   }
 
+  console.log('Resume generation started');
+
   // Generate both DOCX and PDF
   const [docxPath, pdfPath] = await Promise.all([
     generateDocx(data),
@@ -1407,37 +1400,14 @@ async function processFullResume(from, resumeRequestId) {
   const pdfUrl = `${baseUrl}/resume/${pdfToken}`;
 
   await db.updateResumeRequestStatus(resumeRequestId, 'completed');
+  console.log('Resume generation completed');
 
-  // Step 1: Send files directly on WhatsApp
-  const resumeName = (data.name || 'Resume').replace(/[^a-zA-Z0-9 ]/g, '').trim();
-
-  // Upload and send PDF
-  try {
-    const pdfMediaId = await uploadWhatsAppMedia(pdfPath, 'application/pdf');
-    if (pdfMediaId) {
-      await sendWhatsAppDocument(from, pdfMediaId, `${resumeName} - Resume.pdf`, '📄 Your resume (PDF)');
-    }
-  } catch (err) {
-    console.error('[PDF SEND ERROR]', err.message);
-  }
-
-  // Upload and send DOCX
-  try {
-    const docxMediaId = await uploadWhatsAppMedia(docxPath, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    if (docxMediaId) {
-      await sendWhatsAppDocument(from, docxMediaId, `${resumeName} - Resume.docx`, '📝 Your resume (Word)');
-    }
-  } catch (err) {
-    console.error('[DOCX SEND ERROR]', err.message);
-  }
-
-  // Step 2: Also send download links as fallback
+  // Send download links (direct WhatsApp file sending temporarily disabled)
   const msg =
     '✅ *Your resume is ready!*\n\n' +
-    'I\'ve sent the files above. You can also download here:\n\n' +
-    '📄 PDF: ' + pdfUrl + '\n' +
-    '📝 Word: ' + docxUrl + '\n\n' +
-    '_(Links valid for 24 hours)_\n\n' +
+    'Download your files here (valid for 24 hours):\n\n' +
+    '📄 PDF:\n' + pdfUrl + '\n\n' +
+    '📝 Word:\n' + docxUrl + '\n\n' +
     'Type *menu* to create another resume.';
 
   await sendWhatsApp(from, msg);
@@ -1488,7 +1458,6 @@ async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: 'Extract ALL resume data from this document. Do not miss any information:\n\n' + text.slice(0, 12000) }],
     });
-    console.log('Extraction raw:', extraction.content[0].text.slice(0, 200));
     resumeData = parseStructuredText(extraction.content[0].text);
   } catch (err) {
     console.error('Extraction error:', err.message);
