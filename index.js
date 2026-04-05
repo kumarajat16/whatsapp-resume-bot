@@ -39,6 +39,38 @@ if (RAZORPAY_ENABLED) {
   });
 }
 
+// ─── Admin auth ──────────────────────────────────────────────────────────────
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'resumewala123';
+const adminSessions = new Map(); // token -> createdAt
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  const out = {};
+  header.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx > -1) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      if (k) out[k] = decodeURIComponent(v);
+    }
+  });
+  return out;
+}
+
+function isAdminAuthed(req) {
+  const cookies = parseCookies(req);
+  const token = cookies.admin_session;
+  return !!(token && adminSessions.has(token));
+}
+
+function requireAdminAuth(req, res, next) {
+  if (!isAdminAuthed(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
 // ─── Temp file store ─────────────────────────────────────────────────────────
 
 const tempFiles = new Map();
@@ -864,6 +896,7 @@ async function handleAudioMessage(from, mediaId, mimeType) {
 
     // Step 4: Process with AI — filler already sent, AI reply comes LAST
     const reply = await handleMessage(from, user, transcription.trim());
+    await db.tagLastIncomingMessage(from, 'audio').catch(err => console.error('tag audio error:', err.message));
     const chunks = splitMessage(reply);
     for (const chunk of chunks) {
       await sendWhatsApp(from, chunk);
@@ -1122,6 +1155,396 @@ h1{color:#1F3864;font-size:24px}h2{color:#1F3864;font-size:18px;margin-top:30px}
 <p class="footer">ResumeWala.ai — Built for Indian job seekers.</p>
 </body></html>`);
 });
+
+// ─── Admin dashboard ─────────────────────────────────────────────────────────
+
+app.post('/admin/login', (req, res) => {
+  const password = req.body?.password || '';
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ success: false, error: 'Invalid password' });
+  }
+  const token = crypto.randomUUID();
+  adminSessions.set(token, Date.now());
+  // Session cookie (no Max-Age = expires on browser close)
+  res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Strict`);
+  res.json({ success: true });
+});
+
+app.post('/admin/logout', (req, res) => {
+  const cookies = parseCookies(req);
+  if (cookies.admin_session) adminSessions.delete(cookies.admin_session);
+  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  res.json({ success: true });
+});
+
+app.get('/admin', (req, res) => {
+  if (!isAdminAuthed(req)) {
+    return res.send(ADMIN_LOGIN_HTML);
+  }
+  res.send(ADMIN_DASHBOARD_HTML);
+});
+
+app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
+  try {
+    const { start_date, end_date, state, chat_depth } = req.query;
+
+    const params = [];
+    const whereClauses = [];
+
+    // Base query: aggregate messages per user via their resume_requests
+    let sql = `
+      WITH latest_request AS (
+        SELECT DISTINCT ON (user_id) user_id, status, id
+        FROM resume_requests
+        ORDER BY user_id, created_at DESC
+      ),
+      message_stats AS (
+        SELECT
+          rr.user_id,
+          MAX(m.created_at) AS last_message_timestamp,
+          COUNT(*) FILTER (WHERE m.direction = 'incoming') AS chat_depth,
+          COUNT(*) FILTER (WHERE m.message_type = 'audio') AS audio_count,
+          COUNT(*) FILTER (WHERE m.message_type = 'document') AS document_count
+        FROM messages m
+        JOIN resume_requests rr ON m.resume_request_id = rr.id
+        GROUP BY rr.user_id
+      )
+      SELECT
+        u.id AS user_id,
+        u.phone_number,
+        ms.last_message_timestamp,
+        COALESCE(lr.status, 'no_session') AS state,
+        COALESCE(ms.chat_depth, 0)::int AS chat_depth,
+        COALESCE(ms.audio_count, 0)::int AS audio_count,
+        COALESCE(ms.document_count, 0)::int AS document_count
+      FROM users u
+      LEFT JOIN latest_request lr ON lr.user_id = u.id
+      LEFT JOIN message_stats ms ON ms.user_id = u.id
+    `;
+
+    if (start_date) {
+      params.push(start_date);
+      whereClauses.push(`ms.last_message_timestamp >= $${params.length}`);
+    }
+    if (end_date) {
+      params.push(end_date);
+      whereClauses.push(`ms.last_message_timestamp <= $${params.length}`);
+    }
+    if (state) {
+      params.push(state);
+      whereClauses.push(`lr.status = $${params.length}`);
+    }
+    if (chat_depth) {
+      if (chat_depth === '1-5') {
+        whereClauses.push(`COALESCE(ms.chat_depth, 0) BETWEEN 1 AND 5`);
+      } else if (chat_depth === '6-10') {
+        whereClauses.push(`COALESCE(ms.chat_depth, 0) BETWEEN 6 AND 10`);
+      } else if (chat_depth === '10+') {
+        whereClauses.push(`COALESCE(ms.chat_depth, 0) > 10`);
+      }
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ' WHERE ' + whereClauses.join(' AND ');
+    }
+
+    sql += ' ORDER BY ms.last_message_timestamp DESC NULLS LAST LIMIT 500';
+
+    const result = await db.pool.query(sql, params);
+    res.json({ rows: result.rows });
+  } catch (err) {
+    console.error('ADMIN /conversations error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/admin/chat/:phone_number', requireAdminAuth, async (req, res) => {
+  try {
+    const phone = req.params.phone_number;
+    const result = await db.pool.query(
+      `SELECT m.direction, m.message_text, m.message_type, m.created_at
+       FROM messages m
+       JOIN resume_requests rr ON m.resume_request_id = rr.id
+       JOIN users u ON rr.user_id = u.id
+       WHERE u.phone_number = $1
+       ORDER BY m.created_at ASC`,
+      [phone]
+    );
+    const messages = result.rows.map(r => ({
+      role: r.direction === 'incoming' ? 'user' : 'bot',
+      message_text: r.message_text,
+      message_type: r.message_type,
+      timestamp: r.created_at,
+    }));
+    res.json({ phone_number: phone, messages });
+  } catch (err) {
+    console.error('ADMIN /chat error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+const ADMIN_LOGIN_HTML = `<!DOCTYPE html><html><head><title>Admin Login - ResumeWala</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f0f2f5}
+.card{background:white;padding:40px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08);width:360px}
+h1{color:#1F3864;font-size:22px;margin-bottom:20px;text-align:center}
+input{width:100%;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:15px;margin-bottom:12px}
+button{width:100%;padding:12px;background:#1F3864;color:white;border:none;border-radius:6px;font-size:15px;font-weight:600;cursor:pointer}
+button:hover{background:#2a4a7a}
+.err{color:#c00;font-size:13px;margin-top:8px;min-height:18px}
+</style></head>
+<body><div class="card">
+<h1>Admin Dashboard</h1>
+<form id="f">
+<input type="password" id="pw" placeholder="Password" autofocus required>
+<button type="submit">Login</button>
+<div class="err" id="err"></div>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const pw = document.getElementById('pw').value;
+  const err = document.getElementById('err');
+  err.textContent = '';
+  try {
+    const r = await fetch('/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    if (r.ok) {
+      window.location.reload();
+    } else {
+      err.textContent = 'Invalid password';
+    }
+  } catch (e) {
+    err.textContent = 'Network error';
+  }
+});
+</script>
+</div></body></html>`;
+
+const ADMIN_DASHBOARD_HTML = `<!DOCTYPE html><html><head><title>Admin Dashboard - ResumeWala</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#f0f2f5;color:#222;padding:20px}
+h1{color:#1F3864;font-size:24px;margin-bottom:16px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.logout{background:#eee;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px}
+.logout:hover{background:#ddd}
+.filters{background:white;padding:16px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:16px}
+.filter{display:flex;flex-direction:column;gap:4px}
+.filter label{font-size:12px;color:#666;font-weight:600}
+.filter input,.filter select{padding:8px;border:1px solid #ddd;border-radius:6px;font-size:14px}
+.filter button{padding:8px 16px;background:#1F3864;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px}
+.filter button:hover{background:#2a4a7a}
+.filter .reset{background:#eee;color:#333}
+.filter .reset:hover{background:#ddd}
+.table-wrap{background:white;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:900px}
+th,td{padding:10px 12px;text-align:left;font-size:13px;border-bottom:1px solid #eee}
+th{background:#f8f9fa;color:#555;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.3px;position:sticky;top:0}
+tr:hover{background:#fafbfc}
+.view-btn{background:#1F3864;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px}
+.view-btn:hover{background:#2a4a7a}
+.state{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.state-paid{background:#d4edda;color:#155724}
+.state-completed{background:#cce5ff;color:#004085}
+.state-collecting_data{background:#fff3cd;color:#856404}
+.state-awaiting_input{background:#e2e3e5;color:#383d41}
+.state-abandoned{background:#f8d7da;color:#721c24}
+.state-no_session{background:#f8f9fa;color:#666}
+.state-generating{background:#e7f3ff;color:#0c63e4}
+.state-preview_ready{background:#d1ecf1;color:#0c5460}
+.empty{padding:40px;text-align:center;color:#888}
+.overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
+.overlay.show{display:flex}
+.modal{background:white;border-radius:12px;width:100%;max-width:640px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-header{padding:16px 20px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}
+.modal-header h2{font-size:16px;color:#1F3864}
+.modal-close{background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1}
+.modal-body{flex:1;overflow-y:auto;padding:16px 20px;background:#f8f9fa}
+.msg{margin-bottom:12px;max-width:80%;padding:10px 14px;border-radius:10px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word}
+.msg-user{background:#dcf8c6;margin-left:auto;border-bottom-right-radius:2px}
+.msg-bot{background:white;border:1px solid #eee;margin-right:auto;border-bottom-left-radius:2px}
+.msg-meta{font-size:10px;color:#888;margin-top:4px}
+.msg-type-tag{display:inline-block;background:#ffd700;color:#333;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:4px;text-transform:uppercase}
+.loading{padding:40px;text-align:center;color:#888}
+.count{text-align:center;font-weight:600}
+</style></head>
+<body>
+<div class="header">
+<h1>Admin Dashboard</h1>
+<button class="logout" id="logoutBtn">Logout</button>
+</div>
+
+<div class="filters">
+<div class="filter">
+<label>Start Date</label>
+<input type="date" id="startDate">
+</div>
+<div class="filter">
+<label>End Date</label>
+<input type="date" id="endDate">
+</div>
+<div class="filter">
+<label>State</label>
+<select id="stateFilter">
+<option value="">All</option>
+<option value="awaiting_input">awaiting_input</option>
+<option value="collecting_data">collecting_data</option>
+<option value="paid">paid</option>
+<option value="generating">generating</option>
+<option value="preview_ready">preview_ready</option>
+<option value="completed">completed</option>
+<option value="abandoned">abandoned</option>
+</select>
+</div>
+<div class="filter">
+<label>Chat Depth</label>
+<select id="depthFilter">
+<option value="">All</option>
+<option value="1-5">1-5 messages</option>
+<option value="6-10">6-10 messages</option>
+<option value="10+">10+ messages</option>
+</select>
+</div>
+<div class="filter">
+<label>&nbsp;</label>
+<button id="applyBtn">Apply Filters</button>
+</div>
+<div class="filter">
+<label>&nbsp;</label>
+<button class="reset" id="resetBtn">Reset</button>
+</div>
+</div>
+
+<div class="table-wrap">
+<table>
+<thead><tr>
+<th>User ID</th>
+<th>Phone</th>
+<th>Chat</th>
+<th>Last Active (IST)</th>
+<th>State</th>
+<th>Audio</th>
+<th>Docs</th>
+<th>Chat Depth</th>
+</tr></thead>
+<tbody id="tbody"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<div class="overlay" id="overlay">
+<div class="modal">
+<div class="modal-header">
+<h2 id="modalTitle">Conversation</h2>
+<button class="modal-close" id="modalClose">&times;</button>
+</div>
+<div class="modal-body" id="modalBody"><div class="loading">Loading...</div></div>
+</div>
+</div>
+
+<script>
+function fmtIST(ts){
+  if(!ts)return '-';
+  const d=new Date(ts);
+  return d.toLocaleString('en-IN',{timeZone:'Asia/Kolkata',year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+async function loadData(){
+  const qs=new URLSearchParams();
+  const sd=document.getElementById('startDate').value;
+  const ed=document.getElementById('endDate').value;
+  const st=document.getElementById('stateFilter').value;
+  const cd=document.getElementById('depthFilter').value;
+  if(sd)qs.set('start_date',sd);
+  if(ed)qs.set('end_date',ed+'T23:59:59');
+  if(st)qs.set('state',st);
+  if(cd)qs.set('chat_depth',cd);
+  const tbody=document.getElementById('tbody');
+  tbody.innerHTML='<tr><td colspan="8" class="loading">Loading...</td></tr>';
+  try{
+    const r=await fetch('/admin/conversations?'+qs.toString());
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!data.rows||data.rows.length===0){
+      tbody.innerHTML='<tr><td colspan="8" class="empty">No users found</td></tr>';
+      return;
+    }
+    tbody.innerHTML=data.rows.map(row=>{
+      const state=esc(row.state);
+      return '<tr>'+
+        '<td>'+esc(String(row.user_id).slice(0,8))+'...</td>'+
+        '<td>'+esc(row.phone_number)+'</td>'+
+        '<td><button class="view-btn" data-phone="'+esc(row.phone_number)+'">View Chat</button></td>'+
+        '<td>'+fmtIST(row.last_message_timestamp)+'</td>'+
+        '<td><span class="state state-'+state+'">'+state+'</span></td>'+
+        '<td class="count">'+row.audio_count+'</td>'+
+        '<td class="count">'+row.document_count+'</td>'+
+        '<td class="count">'+row.chat_depth+'</td>'+
+      '</tr>';
+    }).join('');
+    document.querySelectorAll('.view-btn').forEach(b=>{
+      b.addEventListener('click',()=>openChat(b.dataset.phone));
+    });
+  }catch(e){
+    tbody.innerHTML='<tr><td colspan="8" class="empty">Error loading data</td></tr>';
+  }
+}
+
+async function openChat(phone){
+  document.getElementById('modalTitle').textContent='Chat: '+phone;
+  document.getElementById('overlay').classList.add('show');
+  const body=document.getElementById('modalBody');
+  body.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const r=await fetch('/admin/chat/'+encodeURIComponent(phone));
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!data.messages||data.messages.length===0){
+      body.innerHTML='<div class="empty">No messages</div>';
+      return;
+    }
+    body.innerHTML=data.messages.map(m=>{
+      const cls=m.role==='user'?'msg-user':'msg-bot';
+      const tag=(m.message_type&&m.message_type!=='conversation'&&m.message_type!=='text')?
+        '<span class="msg-type-tag">'+esc(m.message_type)+'</span>':'';
+      return '<div class="msg '+cls+'">'+tag+esc(m.message_text)+
+        '<div class="msg-meta">'+fmtIST(m.timestamp)+'</div></div>';
+    }).join('');
+    body.scrollTop=body.scrollHeight;
+  }catch(e){
+    body.innerHTML='<div class="empty">Error loading chat</div>';
+  }
+}
+
+document.getElementById('applyBtn').addEventListener('click',loadData);
+document.getElementById('resetBtn').addEventListener('click',()=>{
+  document.getElementById('startDate').value='';
+  document.getElementById('endDate').value='';
+  document.getElementById('stateFilter').value='';
+  document.getElementById('depthFilter').value='';
+  loadData();
+});
+document.getElementById('modalClose').addEventListener('click',()=>{
+  document.getElementById('overlay').classList.remove('show');
+});
+document.getElementById('overlay').addEventListener('click',e=>{
+  if(e.target.id==='overlay')document.getElementById('overlay').classList.remove('show');
+});
+document.getElementById('logoutBtn').addEventListener('click',async()=>{
+  await fetch('/admin/logout',{method:'POST'});
+  window.location.reload();
+});
+
+loadData();
+</script>
+</body></html>`;
 
 // Razorpay webhook
 if (RAZORPAY_ENABLED) {
@@ -1493,12 +1916,14 @@ async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
       'Missing fields: ' + missing.join(', ') + '\n' +
       'I already asked about: ' + batch.map(q => q.split('\n')[0]).join('; ');
     await db.addMessage(resumeReq.id, 'incoming', contextMsg);
+    await db.tagLastIncomingMessage(from, 'document').catch(err => console.error('tag document error:', err.message));
     await db.addMessage(resumeReq.id, 'outgoing', understanding + '\n\n' + questionMsg);
   } else {
     // No missing fields — ready to generate
     const readyMsg = 'Your resume data looks complete! Reply *YES* to generate your resume, or tell me if you want to change anything.';
     await sendWhatsApp(from, readyMsg);
     await db.addMessage(resumeReq.id, 'incoming', 'User uploaded resume with complete data.');
+    await db.tagLastIncomingMessage(from, 'document').catch(err => console.error('tag document error:', err.message));
     await db.addMessage(resumeReq.id, 'outgoing', understanding + '\n\n' + readyMsg);
   }
 }

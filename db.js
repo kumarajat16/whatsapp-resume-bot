@@ -287,6 +287,20 @@ async function addMessage(resumeRequestId, direction, text, messageType) {
   );
 }
 
+async function tagLastIncomingMessage(phoneNumber, messageType) {
+  await pool.query(
+    `UPDATE messages SET message_type = $1
+     WHERE id = (
+       SELECT m.id FROM messages m
+       JOIN resume_requests rr ON m.resume_request_id = rr.id
+       JOIN users u ON rr.user_id = u.id
+       WHERE u.phone_number = $2 AND m.direction = 'incoming'
+       ORDER BY m.created_at DESC LIMIT 1
+     )`,
+    [messageType, phoneNumber]
+  );
+}
+
 async function getConversationMessages(resumeRequestId) {
   const result = await pool.query(
     `SELECT direction, message_text FROM messages
@@ -378,6 +392,7 @@ module.exports = {
   getResumeData,
   saveResumeData,
   addMessage,
+  tagLastIncomingMessage,
   getConversationMessages,
   createPayment,
   updatePaymentByLinkId,
