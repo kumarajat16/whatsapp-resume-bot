@@ -77,12 +77,12 @@ const tempFiles = new Map();
 
 const FILE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-function storeTempFile(filePath, filename) {
+function storeTempFile(filePath, filename, expiryMs) {
   const token = crypto.randomUUID();
   setTimeout(() => {
     tempFiles.delete(token);
     fs.unlink(filePath, () => {});
-  }, FILE_EXPIRY_MS);
+  }, expiryMs || FILE_EXPIRY_MS);
   tempFiles.set(token, { filePath, filename });
   return token;
 }
@@ -604,62 +604,72 @@ async function generateAIUnderstanding(data) {
 
 // ─── Redacted resume preview ─────────────────────────────────────────────────
 
-function buildRedactedPreview(data) {
-  let preview = '';
+function redactText(text) {
+  if (!text) return text;
+  const s = String(text);
+  const midpoint = Math.ceil(s.length / 2);
+  const visible = s.slice(0, midpoint);
+  const hidden = s.slice(midpoint).replace(/\S/g, '*');
+  return visible + hidden;
+}
 
-  // Name - show first name, redact rest
-  const nameParts = (data.name || '').split(' ');
-  const redactedName = nameParts.length > 1
-    ? nameParts[0] + ' ****'
-    : (nameParts[0] || '****');
-  preview += '*' + redactedName + '*\n';
+function redactResumeData(data) {
+  const r = { ...data };
+  r.name = redactText(r.name);
+  r.headline = redactText(r.headline);
+  r.email = r.email ? '****@****.com' : '';
+  r.phone = r.phone ? '+91 ****' : '';
+  r.summary = redactText(r.summary);
+  r.target_role = redactText(r.target_role);
 
-  if (data.headline) preview += data.headline + '\n';
-  preview += '****@****.com | +91 ****\n';
-  if (data.location) preview += data.location + '\n';
-  preview += '\n';
-
-  if (data.summary) {
-    preview += '*SUMMARY*\n';
-    preview += data.summary.slice(0, 100) + '****\n\n';
-  }
-
-  if (data.experience && data.experience.length > 0) {
-    preview += '*EXPERIENCE*\n';
-    for (const exp of data.experience) {
-      if (typeof exp === 'object') {
-        preview += (exp.title || '****') + ' | ' + (exp.company || '****') + '\n';
-        const resps = Array.isArray(exp.responsibilities) ? exp.responsibilities : [];
-        if (resps.length > 0) {
-          preview += '\u2022 ' + String(resps[0]).slice(0, 60) + '****\n';
-        }
-        if (resps.length > 1) {
-          preview += '\u2022 ****\n';
-        }
-      }
+  r.experience = (data.experience || []).map(exp => {
+    if (typeof exp === 'object') {
+      return {
+        ...exp,
+        title: redactText(exp.title),
+        company: redactText(exp.company),
+        duration: redactText(exp.duration),
+        description: redactText(exp.description),
+        responsibilities: (exp.responsibilities || []).map(s => redactText(String(s))),
+      };
     }
-    preview += '\n';
-  }
+    return redactText(String(exp));
+  });
 
-  if (data.education && data.education.length > 0) {
-    preview += '*EDUCATION*\n';
-    for (const edu of data.education) {
-      if (typeof edu === 'object') {
-        preview += (edu.degree || '****') + ', ' + (edu.institution || '****') + '\n';
-      }
+  r.education = (data.education || []).map(edu => {
+    if (typeof edu === 'object') {
+      return {
+        ...edu,
+        degree: redactText(edu.degree),
+        institution: redactText(edu.institution),
+      };
     }
-    preview += '\n';
-  }
+    return redactText(String(edu));
+  });
 
-  if (data.skills && data.skills.length > 0) {
-    preview += '*SKILLS*\n';
-    const shown = data.skills.slice(0, 3).join(' | ');
-    preview += shown;
-    if (data.skills.length > 3) preview += ' | ****';
-    preview += '\n';
-  }
+  r.skills = (data.skills || []).map(s => redactText(String(s)));
+  r.projects = (data.projects || []).map(s => redactText(String(s)));
+  r.certifications = (data.certifications || []).map(s => redactText(String(s)));
+  r.achievements = (data.achievements || []).map(s => redactText(String(s)));
+  r.tools = (data.tools || []).map(s => redactText(String(s)));
 
-  return preview;
+  r.leadership = (data.leadership || []).map(item => {
+    if (typeof item === 'object' && item.title) {
+      return {
+        ...item,
+        title: redactText(item.title),
+        company: redactText(item.company),
+        duration: redactText(item.duration),
+        responsibilities: (item.responsibilities || []).map(s => redactText(String(s))),
+      };
+    }
+    return redactText(String(item));
+  });
+
+  r.languages = (data.languages || []).map(s => redactText(String(s)));
+  r.hobbies = (data.hobbies || []).map(s => redactText(String(s)));
+
+  return r;
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
@@ -1776,9 +1786,6 @@ async function startFullResumeGeneration(from, user, resumeReq) {
 // ─── Async processors ────────────────────────────────────────────────────────
 
 async function processResumePreview(from, resumeRequestId) {
-  // Send filler messages FIRST, then process
-  await sendFillerMessages(from, RESUME_GEN_BATCHES, 2500);
-
   await extractAndSaveFromConversation(resumeRequestId);
   const data = await db.getResumeData(resumeRequestId);
 
@@ -1790,20 +1797,40 @@ async function processResumePreview(from, resumeRequestId) {
 
   await db.updateResumeRequestStatus(resumeRequestId, 'preview_ready');
 
-  // Build redacted preview
-  const preview = buildRedactedPreview(data);
+  // Send loader messages while generating preview
+  await sendWhatsApp(from, 'Generating your resume preview...');
+  await new Promise(r => setTimeout(r, 2000));
+  await sendWhatsApp(from, 'Formatting the resume layout...');
+  await new Promise(r => setTimeout(r, 2000));
+  await sendWhatsApp(from, 'Preparing your preview document...');
+
+  // Generate redacted preview PDF
+  const redactedData = redactResumeData(data);
+  const previewPdfPath = await generatePdf(redactedData);
+  const PREVIEW_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
+  const previewToken = storeTempFile(previewPdfPath, 'ResumeWala-Preview.pdf', PREVIEW_EXPIRY_MS);
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
+  const previewUrl = `${baseUrl}/resume/${previewToken}`;
+
+  // Send preview link
+  await sendWhatsApp(from,
+    'Your resume preview is ready.\n\n' +
+    'You can view the preview here:\n' + previewUrl + '\n\n' +
+    'This preview link will expire in 15 minutes.'
+  );
 
   if (RAZORPAY_ENABLED) {
-    // Send preview
-    await sendWhatsApp(from, 'Here\'s a preview of your resume:\n\n' + preview);
-
-    // Create payment link and send
+    // Send payment message
     const paymentMsg = await createPaymentLink(from, { id: resumeRequestId });
-    await sendWhatsApp(from, paymentMsg + '\n\nOr reply:\n2 - Edit something\n3 - Start over');
+    await sendWhatsApp(from,
+      'If you like the resume preview, complete the payment below to download the full resume.\n\n' +
+      paymentMsg + '\n\n' +
+      'After payment you will receive the complete resume in PDF and Word format.\n\n' +
+      'Or reply:\n2 - Edit something\n3 - Start over'
+    );
   } else {
     // Free mode: show preview + download options
     await sendWhatsApp(from,
-      'Here\'s a preview of your resume:\n\n' + preview + '\n' +
       'Reply:\n' +
       '1 - Download full resume\n' +
       '2 - Edit something\n' +
