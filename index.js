@@ -1194,7 +1194,7 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
     // Base query: aggregate messages per user via their resume_requests
     let sql = `
       WITH latest_request AS (
-        SELECT DISTINCT ON (user_id) user_id, status, id
+        SELECT DISTINCT ON (user_id) user_id, status, id, pdf_url
         FROM resume_requests
         ORDER BY user_id, created_at DESC
       ),
@@ -1216,7 +1216,8 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         COALESCE(lr.status, 'no_session') AS state,
         COALESCE(ms.chat_depth, 0)::int AS chat_depth,
         COALESCE(ms.audio_count, 0)::int AS audio_count,
-        COALESCE(ms.document_count, 0)::int AS document_count
+        COALESCE(ms.document_count, 0)::int AS document_count,
+        lr.pdf_url
       FROM users u
       LEFT JOIN latest_request lr ON lr.user_id = u.id
       LEFT JOIN message_stats ms ON ms.user_id = u.id
@@ -1271,7 +1272,7 @@ app.get('/admin/chat/:phone_number', requireAdminAuth, async (req, res) => {
       [phone]
     );
     const messages = result.rows.map(r => ({
-      role: r.direction === 'incoming' ? 'user' : 'bot',
+      role: r.direction === 'system' ? 'system' : r.direction === 'incoming' ? 'user' : 'bot',
       message_text: r.message_text,
       message_type: r.message_type,
       timestamp: r.created_at,
@@ -1344,7 +1345,7 @@ h1{color:#1F3864;font-size:24px;margin-bottom:16px}
 .filter .reset{background:#eee;color:#333}
 .filter .reset:hover{background:#ddd}
 .table-wrap{background:white;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:900px}
+table{width:100%;border-collapse:collapse;min-width:1000px}
 th,td{padding:10px 12px;text-align:left;font-size:13px;border-bottom:1px solid #eee}
 th{background:#f8f9fa;color:#555;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.3px;position:sticky;top:0}
 tr:hover{background:#fafbfc}
@@ -1372,6 +1373,7 @@ tr:hover{background:#fafbfc}
 .msg-bot{background:white;border:1px solid #eee;margin-right:auto;border-bottom-left-radius:2px}
 .msg-meta{font-size:10px;color:#888;margin-top:4px}
 .msg-type-tag{display:inline-block;background:#ffd700;color:#333;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:4px;text-transform:uppercase}
+.msg-system{background:#e7f3ff;border:1px dashed #90caf9;margin:8px auto;max-width:60%;text-align:center;font-size:12px;color:#0c63e4;font-weight:600}
 .loading{padding:40px;text-align:center;color:#888}
 .count{text-align:center;font-weight:600}
 </style></head>
@@ -1433,8 +1435,9 @@ tr:hover{background:#fafbfc}
 <th>Audio</th>
 <th>Docs</th>
 <th>Chat Depth</th>
+<th>Resume</th>
 </tr></thead>
-<tbody id="tbody"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+<tbody id="tbody"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody>
 </table>
 </div>
 
@@ -1467,17 +1470,20 @@ async function loadData(){
   if(st)qs.set('state',st);
   if(cd)qs.set('chat_depth',cd);
   const tbody=document.getElementById('tbody');
-  tbody.innerHTML='<tr><td colspan="8" class="loading">Loading...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="9" class="loading">Loading...</td></tr>';
   try{
     const r=await fetch('/admin/conversations?'+qs.toString());
     if(r.status===401){window.location.reload();return;}
     const data=await r.json();
     if(!data.rows||data.rows.length===0){
-      tbody.innerHTML='<tr><td colspan="8" class="empty">No users found</td></tr>';
+      tbody.innerHTML='<tr><td colspan="9" class="empty">No users found</td></tr>';
       return;
     }
     tbody.innerHTML=data.rows.map(row=>{
       const state=esc(row.state);
+      const resumeCell=row.pdf_url
+        ?'<a href="'+esc(row.pdf_url)+'" target="_blank" rel="noopener" class="view-btn" style="text-decoration:none;display:inline-block">View Resume</a>'
+        :'<span style="color:#999;font-size:12px">Not Generated</span>';
       return '<tr>'+
         '<td>'+esc(String(row.user_id).slice(0,8))+'...</td>'+
         '<td>'+esc(row.phone_number)+'</td>'+
@@ -1487,13 +1493,14 @@ async function loadData(){
         '<td class="count">'+row.audio_count+'</td>'+
         '<td class="count">'+row.document_count+'</td>'+
         '<td class="count">'+row.chat_depth+'</td>'+
+        '<td>'+resumeCell+'</td>'+
       '</tr>';
     }).join('');
     document.querySelectorAll('.view-btn').forEach(b=>{
       b.addEventListener('click',()=>openChat(b.dataset.phone));
     });
   }catch(e){
-    tbody.innerHTML='<tr><td colspan="8" class="empty">Error loading data</td></tr>';
+    tbody.innerHTML='<tr><td colspan="9" class="empty">Error loading data</td></tr>';
   }
 }
 
@@ -1511,8 +1518,12 @@ async function openChat(phone){
       return;
     }
     body.innerHTML=data.messages.map(m=>{
+      if(m.role==='system'){
+        return '<div class="msg msg-system">'+esc(m.message_text)+
+          '<div class="msg-meta">'+fmtIST(m.timestamp)+'</div></div>';
+      }
       const cls=m.role==='user'?'msg-user':'msg-bot';
-      const tag=(m.message_type&&m.message_type!=='conversation'&&m.message_type!=='text')?
+      const tag=(m.message_type&&m.message_type!=='conversation'&&m.message_type!=='text'&&m.message_type!=='system')?
         '<span class="msg-type-tag">'+esc(m.message_type)+'</span>':'';
       return '<div class="msg '+cls+'">'+tag+esc(m.message_text)+
         '<div class="msg-meta">'+fmtIST(m.timestamp)+'</div></div>';
@@ -1585,6 +1596,7 @@ if (RAZORPAY_ENABLED) {
         }
 
         await db.updateResumeRequestStatus(resumeRequestId, 'paid');
+        await db.addMessage(resumeRequestId, 'system', 'payment_completed', 'system');
         console.log('Payment verified:', paymentId);
         processFullResume(phone, resumeRequestId).catch(err => {
           console.error('Post-payment resume generation error:', err);
@@ -1809,6 +1821,7 @@ async function processFullResume(from, resumeRequestId) {
   }
 
   console.log('Resume generation started');
+  await db.addMessage(resumeRequestId, 'system', 'resume_generation_started', 'system');
 
   // Generate both DOCX and PDF
   const [docxPath, pdfPath] = await Promise.all([
@@ -1822,6 +1835,10 @@ async function processFullResume(from, resumeRequestId) {
   const docxUrl = `${baseUrl}/resume/${docxToken}`;
   const pdfUrl = `${baseUrl}/resume/${pdfToken}`;
 
+  // Store resume URLs in database
+  await db.saveResumeUrls(resumeRequestId, pdfUrl, docxUrl);
+  await db.addMessage(resumeRequestId, 'system', 'resume_generated', 'system');
+
   await db.updateResumeRequestStatus(resumeRequestId, 'completed');
   console.log('Resume generation completed');
 
@@ -1834,6 +1851,7 @@ async function processFullResume(from, resumeRequestId) {
     'Type *menu* to create another resume.';
 
   await sendWhatsApp(from, msg);
+  await db.addMessage(resumeRequestId, 'system', 'resume_links_sent', 'system');
 }
 
 async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
@@ -2059,6 +2077,7 @@ async function createPaymentLink(from, resumeReq) {
 
     // Store payment in database
     await db.createPayment(resumeReq.id, link.id, PAYMENT_AMOUNT);
+    await db.addMessage(resumeReq.id, 'system', 'payment_link_sent', 'system');
 
     const price = PAYMENT_AMOUNT / 100;
     return 'To download your full resume, complete payment:\n\n' +

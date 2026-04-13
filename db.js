@@ -138,6 +138,15 @@ async function initDb() {
   await addUserCol('ad_short_id', 'TEXT');
   await addUserCol('fbclid', 'TEXT');
   await addUserCol('ad_source', 'TEXT');
+
+  // Add resume URL columns to resume_requests
+  const addReqCol = async (col, type) => {
+    try {
+      await pool.query(`ALTER TABLE resume_requests ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+    } catch (_) { /* column already exists */ }
+  };
+  await addReqCol('pdf_url', 'TEXT');
+  await addReqCol('docx_url', 'TEXT');
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -339,6 +348,15 @@ async function getPaymentByResumeRequest(resumeRequestId) {
   return result.rows[0] || null;
 }
 
+// ─── Resume URL helpers ──────────────────────────────────────────────────
+
+async function saveResumeUrls(resumeRequestId, pdfUrl, docxUrl) {
+  await pool.query(
+    'UPDATE resume_requests SET pdf_url = $1, docx_url = $2, updated_at = NOW() WHERE id = $3',
+    [pdfUrl, docxUrl, resumeRequestId]
+  );
+}
+
 // ─── Ad tracking helpers ──────────────────────────────────────────────────
 
 async function createAdTracking(shortId, fbclid) {
@@ -397,6 +415,7 @@ module.exports = {
   createPayment,
   updatePaymentByLinkId,
   getPaymentByResumeRequest,
+  saveResumeUrls,
   createAdTracking,
   getAdTracking,
   attachAdTrackingToUser,
