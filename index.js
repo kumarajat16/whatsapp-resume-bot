@@ -27,7 +27,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const DAILY_MESSAGE_LIMIT = 100;
 const DAILY_RESUME_LIMIT = 5;
-const PAYMENT_AMOUNT = 500; // ₹5 in paise (testing price)
+const PAYMENT_AMOUNT = 4900; // ₹49 in paise
 
 const RAZORPAY_ENABLED = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
 let razorpay = null;
