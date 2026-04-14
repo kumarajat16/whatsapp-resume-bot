@@ -1984,6 +1984,9 @@ async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
     return;
   }
 
+  // Store full resume text for use during final generation
+  await db.saveResumeFullText(resumeReq.id, text.slice(0, 15000));
+
   // Send filler messages FIRST (blocking), then process
   await sendFillerMessages(from, RESUME_PARSE_BATCHES, 2500);
 
@@ -2062,6 +2065,12 @@ async function extractAndSaveFromConversation(resumeRequestId) {
   const resumeSummary = await db.getResumeSummary(resumeRequestId);
   if (resumeSummary) {
     prompt += 'UPLOADED RESUME SUMMARY:\n' + resumeSummary + '\n\n';
+  }
+
+  // Include full original resume content for complete data extraction
+  const resumeFullText = await db.getResumeFullText(resumeRequestId);
+  if (resumeFullText) {
+    prompt += 'FULL ORIGINAL RESUME CONTENT (from uploaded file):\n' + resumeFullText.slice(0, 12000) + '\n\n';
   }
 
   if (existingData && existingData.name) {

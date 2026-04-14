@@ -148,6 +148,7 @@ async function initDb() {
   await addReqCol('pdf_url', 'TEXT');
   await addReqCol('docx_url', 'TEXT');
   await addReqCol('resume_file_summary', 'TEXT');
+  await addReqCol('resume_file_full_text', 'TEXT');
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -381,6 +382,29 @@ async function getResumeSummary(resumeRequestId) {
   return result.rows[0]?.resume_file_summary || '';
 }
 
+// ─── Resume file full text helpers ───────────────────────────────────────
+
+async function saveResumeFullText(resumeRequestId, fullText) {
+  await pool.query(
+    `UPDATE resume_requests
+     SET resume_file_full_text = CASE
+       WHEN resume_file_full_text IS NOT NULL AND resume_file_full_text != ''
+       THEN resume_file_full_text || E'\n\n---\n\n' || $1
+       ELSE $1
+     END, updated_at = NOW()
+     WHERE id = $2`,
+    [fullText, resumeRequestId]
+  );
+}
+
+async function getResumeFullText(resumeRequestId) {
+  const result = await pool.query(
+    'SELECT resume_file_full_text FROM resume_requests WHERE id = $1',
+    [resumeRequestId]
+  );
+  return result.rows[0]?.resume_file_full_text || '';
+}
+
 // ─── Ad tracking helpers ──────────────────────────────────────────────────
 
 async function createAdTracking(shortId, fbclid) {
@@ -442,6 +466,8 @@ module.exports = {
   saveResumeUrls,
   saveResumeSummary,
   getResumeSummary,
+  saveResumeFullText,
+  getResumeFullText,
   createAdTracking,
   getAdTracking,
   attachAdTrackingToUser,
