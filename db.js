@@ -147,6 +147,7 @@ async function initDb() {
   };
   await addReqCol('pdf_url', 'TEXT');
   await addReqCol('docx_url', 'TEXT');
+  await addReqCol('resume_file_summary', 'TEXT');
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -357,6 +358,29 @@ async function saveResumeUrls(resumeRequestId, pdfUrl, docxUrl) {
   );
 }
 
+// ─── Resume file summary helpers ─────────────────────────────────────────
+
+async function saveResumeSummary(resumeRequestId, summary) {
+  await pool.query(
+    `UPDATE resume_requests
+     SET resume_file_summary = CASE
+       WHEN resume_file_summary IS NOT NULL AND resume_file_summary != ''
+       THEN resume_file_summary || E'\n\n---\n\n' || $1
+       ELSE $1
+     END, updated_at = NOW()
+     WHERE id = $2`,
+    [summary, resumeRequestId]
+  );
+}
+
+async function getResumeSummary(resumeRequestId) {
+  const result = await pool.query(
+    'SELECT resume_file_summary FROM resume_requests WHERE id = $1',
+    [resumeRequestId]
+  );
+  return result.rows[0]?.resume_file_summary || '';
+}
+
 // ─── Ad tracking helpers ──────────────────────────────────────────────────
 
 async function createAdTracking(shortId, fbclid) {
@@ -416,6 +440,8 @@ module.exports = {
   updatePaymentByLinkId,
   getPaymentByResumeRequest,
   saveResumeUrls,
+  saveResumeSummary,
+  getResumeSummary,
   createAdTracking,
   getAdTracking,
   attachAdTrackingToUser,

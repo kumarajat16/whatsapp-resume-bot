@@ -386,6 +386,35 @@ Rules:
 - Do NOT list out all their information - synthesize it into a natural narrative
 - Write as if you're an experienced career advisor who is impressed by their profile`;
 
+const RESUME_SUMMARY_PROMPT = `You are a resume analyzer. Given parsed resume data, produce a concise factual summary. Use EXACTLY this format:
+
+Name: [name]
+Current Role: [latest role and company]
+
+Past Experience:
+- [Role at Company]
+
+Key Achievements:
+- [achievement with metric if available]
+
+Skills Mentioned:
+[comma-separated list]
+
+Education:
+[degree from institution]
+
+Projects:
+[project names or one-line descriptions, if any]
+
+Certifications:
+[certifications, if any]
+
+Rules:
+- Include ALL information from the data — do not omit any section that has content
+- Use plain text, no markdown
+- Be factual and complete — this summary will be used to avoid asking the user repeated questions
+- Omit sections only if the data is truly empty`;
+
 // ─── Welcome / Menu ──────────────────────────────────────────────────────────
 
 const WELCOME_MSG = null; // No longer used — all conversations are AI-driven
@@ -571,6 +600,47 @@ function formatMissingFieldQuestions(missing) {
   }
 
   return questions;
+}
+
+// ─── Resume file summary generator ──────────────────────────────────────────
+
+async function generateResumeSummary(data) {
+  const dataStr =
+    'Name: ' + (data.name || '') + '\n' +
+    'Location: ' + (data.location || '') + '\n' +
+    'Email: ' + (data.email || '') + '\n' +
+    'Phone: ' + (data.phone || '') + '\n' +
+    'Headline: ' + (data.headline || '') + '\n' +
+    'Summary: ' + (data.summary || '') + '\n' +
+    'Education: ' + JSON.stringify(data.education || []) + '\n' +
+    'Experience: ' + JSON.stringify(data.experience || []) + '\n' +
+    'Skills: ' + JSON.stringify(data.skills || []) + '\n' +
+    'Projects: ' + JSON.stringify(data.projects || []) + '\n' +
+    'Achievements: ' + JSON.stringify(data.achievements || []) + '\n' +
+    'Certifications: ' + JSON.stringify(data.certifications || []) + '\n' +
+    'Leadership: ' + JSON.stringify(data.leadership || []) + '\n' +
+    'Tools: ' + JSON.stringify(data.tools || []) + '\n' +
+    'Languages: ' + JSON.stringify(data.languages || []);
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 1000,
+      system: RESUME_SUMMARY_PROMPT,
+      messages: [{ role: 'user', content: 'Summarize this resume data:\n\n' + dataStr }],
+    });
+    return response.content[0].text;
+  } catch (err) {
+    console.error('Resume summary generation failed:', err.message);
+    // Fallback: build a basic summary manually
+    const expList = (data.experience || []).map(e =>
+      typeof e === 'object' ? `${e.title || ''} at ${e.company || ''}` : String(e)
+    ).join('\n- ');
+    return `Name: ${data.name || 'Unknown'}\n` +
+      (expList ? `Experience:\n- ${expList}\n` : '') +
+      (data.skills?.length ? `Skills: ${data.skills.join(', ')}\n` : '') +
+      ((data.education || []).length ? `Education: ${data.education.map(e => typeof e === 'object' ? `${e.degree || ''} from ${e.institution || ''}` : String(e)).join(', ')}\n` : '');
+  }
 }
 
 // ─── AI Understanding message generator ──────────────────────────────────────
@@ -1937,6 +2007,10 @@ async function processMediaUpload(from, userId, buffer, tmpPath, contentType) {
   await db.saveResumeData(resumeReq.id, resumeData);
   await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
 
+  // Step 4b: Generate and store resume file summary for context memory
+  const summary = await generateResumeSummary(resumeData);
+  await db.saveResumeSummary(resumeReq.id, summary);
+
   // Step 5: Generate AI understanding message (Message 1)
   const understanding = await generateAIUnderstanding(resumeData);
   await sendWhatsApp(from, understanding);
@@ -1983,6 +2057,13 @@ async function extractAndSaveFromConversation(resumeRequestId) {
   if (!convText.trim()) return;
 
   let prompt = '';
+
+  // Include uploaded resume summary if available
+  const resumeSummary = await db.getResumeSummary(resumeRequestId);
+  if (resumeSummary) {
+    prompt += 'UPLOADED RESUME SUMMARY:\n' + resumeSummary + '\n\n';
+  }
+
   if (existingData && existingData.name) {
     prompt += 'Previously extracted resume data:\n';
     prompt += 'Name: ' + (existingData.name || '') + '\n';
@@ -2003,7 +2084,7 @@ async function extractAndSaveFromConversation(resumeRequestId) {
     prompt += '\n';
   }
   prompt += 'Conversation with additional information:\n\n' + convText.slice(0, 10000);
-  prompt += '\n\nExtract the COMPLETE resume data, merging all sources. Preserve all existing data and add/update from the conversation. Do not lose any information.';
+  prompt += '\n\nExtract the COMPLETE resume data, merging all sources (uploaded resume summary, previously extracted data, and conversation). Preserve all existing data and add/update from the conversation. Do not lose any information.';
 
   try {
     const extraction = await anthropic.messages.create({
@@ -2055,10 +2136,20 @@ async function askClaude(resumeRequestId, userMessage) {
   await db.addMessage(resumeRequestId, 'incoming', userMessage);
   const messages = await db.getConversationMessages(resumeRequestId);
 
+  // Prepend uploaded resume summary if available
+  const resumeSummary = await db.getResumeSummary(resumeRequestId);
+  let systemPrompt = SYSTEM_PROMPT;
+  if (resumeSummary) {
+    systemPrompt += '\n\nUPLOADED RESUME SUMMARY\n\n' + resumeSummary +
+      '\n\nThe user has already provided the above information in their uploaded resume or documents. ' +
+      'Do not ask the user again for information already contained in this summary. ' +
+      'Only ask questions about missing details that could strengthen the resume.';
+  }
+
   const response = await anthropic.messages.create({
     model: 'claude-opus-4-6',
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages,
   });
 
@@ -2459,86 +2550,102 @@ async function generatePdf(data) {
     const NAVY = '#1F3864';
     const GRAY = '#666666';
     const BLACK = '#000000';
+    const LEFT = 50;          // fixed left margin for all content
+    const RIGHT = 545;        // fixed right edge
+    const CONTENT_WIDTH = RIGHT - LEFT;
+    const BULLET_X = LEFT + 10;    // bullet character position
+    const BULLET_TEXT_X = LEFT + 22; // bullet text position (fixed, never recalculated)
+    const BULLET_TEXT_W = RIGHT - BULLET_TEXT_X;
 
     // Name
     doc.fontSize(22).fillColor(NAVY).font('Helvetica-Bold')
-      .text((data.name || 'Resume').toUpperCase(), { align: 'center' });
+      .text((data.name || 'Resume').toUpperCase(), LEFT, doc.y, { width: CONTENT_WIDTH, align: 'center' });
 
     // Headline
     if (data.headline) {
       doc.fontSize(11).fillColor(GRAY).font('Helvetica-Oblique')
-        .text(data.headline, { align: 'center' });
+        .text(data.headline, LEFT, doc.y, { width: CONTENT_WIDTH, align: 'center' });
     }
 
     // Contact
     const contactParts = [data.location, data.email, data.phone].filter(Boolean);
     if (contactParts.length > 0) {
       doc.fontSize(9).fillColor(GRAY).font('Helvetica')
-        .text(contactParts.join('  |  '), { align: 'center' });
+        .text(contactParts.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH, align: 'center' });
     }
 
     doc.moveDown(0.5);
 
-    // Helper: section heading with line and clear spacing
+    // Helper: section heading with line — always starts at LEFT
     const pdfSectionHeading = (title) => {
       doc.moveDown(0.6);
       doc.fontSize(11).fillColor(NAVY).font('Helvetica-Bold')
-        .text(title.toUpperCase());
+        .text(title.toUpperCase(), LEFT, doc.y, { width: CONTENT_WIDTH });
       const y = doc.y + 2;
-      doc.moveTo(50, y).lineTo(545, y)
+      doc.moveTo(LEFT, y).lineTo(RIGHT, y)
         .strokeColor(NAVY).lineWidth(1).stroke();
       doc.moveDown(0.35);
     };
 
-    // Helper: bullet point with hanging indent and bold action verbs + metrics
-    const BULLET_INDENT = 15;
-    const PDF_ACTION_VERBS = new Set([
-      'led', 'built', 'developed', 'optimized', 'launched', 'revamped', 'managed',
-      'created', 'implemented', 'drove', 'spearheaded', 'designed', 'delivered',
-      'established', 'achieved', 'increased', 'reduced', 'improved', 'generated',
-      'streamlined', 'orchestrated', 'pioneered', 'transformed', 'automated',
-      'negotiated', 'executed', 'analyzed', 'mentored', 'directed', 'coordinated',
-      'facilitated', 'initiated', 'secured', 'scaled', 'resolved', 'introduced',
-      'collaborated', 'supervised', 'oversaw', 'consolidated', 'restructured',
-    ]);
-    const pdfMetricPattern = /(\d+[\d,.]*\s*[%xX+]+(?:\s+\w+)?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|team|employees|stores|cities|months|years|cr|lakh|million|billion|[KkMm])\w*|[₹$]\s*\d+[\d,.]*\w*)/gi;
+    // Smart bolding pattern: metrics, impact phrases, tools, technologies
+    const smartBoldPattern = /(\d+[\d,.]*\s*[%xX+]+(?:\s+\w+(?:\s+\w+)?)?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|team|employees|stores|cities|months|years|cr|lakh|million|billion|[KkMm])\w*|[₹$]\s*\d+[\d,.]*\w*)/gi;
 
+    // Helper: bullet point with smart bolding — fixed positions for all bullets
     const pdfBullet = (text) => {
-      const startX = 50 + BULLET_INDENT;
-      const bulletWidth = doc.font('Helvetica').fontSize(10).widthOfString('\u2022  ');
-      const contentX = startX + bulletWidth;
-      const contentWidth = 545 - contentX;
-
+      const currentY = doc.y;
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text('\u2022', startX, doc.y);
+        .text('\u2022', BULLET_X, currentY);
       doc.moveUp();
 
-      // Check for leading action verb
-      const firstSpaceIdx = text.indexOf(' ');
-      let textToPrint = text;
-      if (firstSpaceIdx > 0) {
-        const firstWord = text.slice(0, firstSpaceIdx);
-        if (PDF_ACTION_VERBS.has(firstWord.toLowerCase())) {
-          // Print bold action verb inline
-          doc.font('Helvetica-Bold').fontSize(10).fillColor(BLACK)
-            .text(firstWord, contentX, doc.y, { continued: true, width: contentWidth, lineGap: 2 });
-          textToPrint = text.slice(firstSpaceIdx);
-          // Print the rest
-          doc.font('Helvetica').fontSize(10).fillColor(BLACK)
-            .text(textToPrint, { width: contentWidth, lineGap: 2 });
-          return;
+      // Split text into bold (metrics/impact) and normal segments
+      const segments = [];
+      let lastIndex = 0;
+      let match;
+      smartBoldPattern.lastIndex = 0;
+      while ((match = smartBoldPattern.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          segments.push({ text: text.slice(lastIndex, match.index), bold: false });
         }
+        segments.push({ text: match[1], bold: true });
+        lastIndex = smartBoldPattern.lastIndex;
+      }
+      if (lastIndex < text.length) {
+        segments.push({ text: text.slice(lastIndex), bold: false });
       }
 
-      doc.font('Helvetica').fontSize(10).fillColor(BLACK)
-        .text(text, contentX, doc.y, { width: contentWidth, lineGap: 2 });
+      // If no bold segments, print plain
+      if (segments.length <= 1 && !segments[0]?.bold) {
+        doc.font('Helvetica').fontSize(10).fillColor(BLACK)
+          .text(text, BULLET_TEXT_X, doc.y, { width: BULLET_TEXT_W, lineGap: 2 });
+        return;
+      }
+
+      // Print segments with inline bold switching
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const isLast = i === segments.length - 1;
+        const font = seg.bold ? 'Helvetica-Bold' : 'Helvetica';
+        if (i === 0) {
+          doc.font(font).fontSize(10).fillColor(BLACK)
+            .text(seg.text, BULLET_TEXT_X, doc.y, { continued: !isLast, width: BULLET_TEXT_W, lineGap: 2 });
+        } else {
+          doc.font(font).fontSize(10).fillColor(BLACK)
+            .text(seg.text, { continued: !isLast, width: BULLET_TEXT_W, lineGap: 2 });
+        }
+      }
+    };
+
+    // Helper: job/leadership entry header — always at LEFT
+    const pdfEntryHeader = (parts) => {
+      doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
+        .text(parts.filter(Boolean).join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH });
     };
 
     // Summary
     if (data.summary) {
       pdfSectionHeading('Professional Summary');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(data.summary, { lineGap: 2 });
+        .text(data.summary, LEFT, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
 
     // Experience
@@ -2546,12 +2653,10 @@ async function generatePdf(data) {
       pdfSectionHeading('Professional Experience');
       for (const exp of data.experience) {
         if (typeof exp === 'object') {
-          const parts = [exp.company, exp.title, exp.duration].filter(Boolean);
-          doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-            .text(parts.join('  |  '));
+          pdfEntryHeader([exp.company, exp.title, exp.duration]);
           if (exp.description) {
             doc.fontSize(9).fillColor(GRAY).font('Helvetica-Oblique')
-              .text(exp.description);
+              .text(exp.description, LEFT, doc.y, { width: CONTENT_WIDTH });
             doc.moveDown(0.2);
           }
           const resps = Array.isArray(exp.responsibilities) ? exp.responsibilities : [];
@@ -2580,16 +2685,16 @@ async function generatePdf(data) {
         if (typeof edu === 'object') {
           if (edu.degree) {
             doc.fontSize(10).fillColor(BLACK).font('Helvetica-Bold')
-              .text(edu.degree);
+              .text(edu.degree, LEFT, doc.y, { width: CONTENT_WIDTH });
           }
           const subParts = [edu.institution, edu.year].filter(Boolean);
           if (subParts.length > 0) {
             doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-              .text(subParts.join('  |  '));
+              .text(subParts.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH });
           }
         } else {
           doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-            .text(String(edu));
+            .text(String(edu), LEFT, doc.y, { width: CONTENT_WIDTH });
         }
         doc.moveDown(0.2);
       }
@@ -2600,7 +2705,7 @@ async function generatePdf(data) {
     if (pdfSkills.length > 0) {
       pdfSectionHeading('Skills');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfSkills.join('  |  '), { lineGap: 2 });
+        .text(pdfSkills.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
 
     // Achievements
@@ -2624,7 +2729,7 @@ async function generatePdf(data) {
     if (pdfTools.length > 0) {
       pdfSectionHeading('Tools');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfTools.join('  |  '), { lineGap: 2 });
+        .text(pdfTools.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
 
     // Leadership
@@ -2632,9 +2737,7 @@ async function generatePdf(data) {
       pdfSectionHeading('Leadership Experience');
       for (const item of data.leadership) {
         if (typeof item === 'object' && item.title) {
-          const parts = [item.title, item.company, item.duration].filter(Boolean);
-          doc.fontSize(10).fillColor(NAVY).font('Helvetica-Bold')
-            .text(parts.join('  |  '));
+          pdfEntryHeader([item.title, item.company, item.duration]);
           const resps = Array.isArray(item.responsibilities) ? item.responsibilities : [];
           for (const r of resps) {
             pdfBullet(String(r));
@@ -2651,7 +2754,7 @@ async function generatePdf(data) {
     if (pdfLangs.length > 0) {
       pdfSectionHeading('Languages');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfLangs.join('  |  '), { lineGap: 2 });
+        .text(pdfLangs.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
 
     // Hobbies
@@ -2659,7 +2762,7 @@ async function generatePdf(data) {
     if (pdfHobbies.length > 0) {
       pdfSectionHeading('Hobbies & Interests');
       doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text(pdfHobbies.join('  |  '), { lineGap: 2 });
+        .text(pdfHobbies.join('  |  '), LEFT, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
 
     doc.end();
