@@ -1234,10 +1234,11 @@ src="https://www.facebook.com/tr?id=2164200404396165&ev=PageView&noscript=1"
 <!-- End Meta Pixel Code -->
 <style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f0f8f0}
 .card{background:white;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);text-align:center;max-width:400px}
-h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}</style></head>
-<body><div class="card"><h1>Payment Successful!</h1>
-<p>Your resume is being generated and will be sent to your WhatsApp shortly.</p>
-<p style="margin-top:20px;color:#888;font-size:14px">You can close this page.</p></div>
+h1{color:#1F3864;font-size:24px}p{color:#555;font-size:16px;line-height:1.5}
+.emoji{font-size:48px;margin-bottom:16px}</style></head>
+<body><div class="card"><div class="emoji">🎉</div><h1>Payment Successful!</h1>
+<p>You're all set. Head back to WhatsApp and let's continue building your world-class, job-winning resume.</p>
+<p style="margin-top:20px;color:#888;font-size:14px">You can close this page now.</p></div>
 <!-- Meta Pixel Purchase Event - fires once per unique payment -->
 <script>
 (function(){
