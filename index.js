@@ -401,7 +401,20 @@ Rules:
 - If the resume mentions leadership activities, volunteer work, or organizational roles, put them under Leadership
 - Omit empty sections entirely
 - Do NOT truncate or summarize - extract EVERYTHING from the resume
-- No JSON, no markdown headers`;
+- No JSON, no markdown headers
+
+Smart Bold Rules for Bullets:
+- Use **double asterisks** to bold the most impactful phrases INSIDE each bullet
+- Bold 1-2 phrases per bullet maximum. Do NOT bold the entire sentence
+- Do NOT bold the first word (action verb) of the bullet
+- WHAT TO BOLD:
+  - Metrics and numbers: "increased retention by **32%**"
+  - Key achievements: "Launched **AI-powered recommendation engine**"
+  - Tools/technologies: "using **Python, SQL and Airflow**"
+  - Product/feature names: "Built **Smart Job Match Engine**"
+  - Leadership scope: "**Led cross-functional team of 6 engineers**"
+- NEVER bold generic verbs like Worked, Responsible, Managed
+- Example: Built **SQL-based analytics dashboards** enabling leadership to track metrics and improve retention by **18%**`;
 
 const AI_UNDERSTANDING_PROMPT = `You are ResumeWala. Given parsed resume data, generate a warm personalized message showing you deeply understand this person's profile.
 
@@ -2340,32 +2353,31 @@ async function generateDocx(data) {
     'collaborated', 'supervised', 'oversaw', 'consolidated', 'restructured',
   ]);
 
-  // ── Bullet paragraph with hanging indent, bold action verbs + metrics
+  // ── Bullet paragraph with hanging indent, smart bold via **markers** or fallback
   const bulletParagraph = (text) => {
     const runs = [];
+    const hasMarkers = /\*\*.+?\*\*/.test(text);
 
-    // Step 1: Bold the leading action verb
-    const firstSpaceIdx = text.indexOf(' ');
-    let remaining = text;
-    if (firstSpaceIdx > 0) {
-      const firstWord = text.slice(0, firstSpaceIdx);
-      if (ACTION_VERBS.has(firstWord.toLowerCase())) {
-        runs.push(new TextRun({ text: firstWord, bold: true, size: 21, font: 'Calibri' }));
-        remaining = text.slice(firstSpaceIdx);
+    if (hasMarkers) {
+      // Parse **bold** markers from Claude's extraction output
+      const parts = text.split(/\*\*(.+?)\*\*/g);
+      for (let i = 0; i < parts.length; i++) {
+        if (!parts[i]) continue;
+        runs.push(new TextRun({ text: parts[i], bold: i % 2 === 1, size: 21, font: 'Calibri' }));
       }
-    }
-
-    // Step 2: Bold metric phrases in remaining text
-    const metricPattern = /((?:[₹$])\s*\d+[\d,.]*\s*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh|crore))?\s*\+?\s*(?:revenue|users|customers|leads|growth|improvement|reduction|increase)?|\d+[\d,.]*\s*[%xX]+(?:\s+(?:growth|improvement|increase|reduction|conversion|revenue|ROI|margin))?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|members|participants|team|employees|stores|cities|brands|clients|partners|campaigns|experiments|projects|products|months|years|weeks|days|cr|lakh|Cr|Lakh|crore|million|billion|[KkMm])\w*)/gi;
-    const parts = remaining.split(metricPattern);
-    for (const part of parts) {
-      if (!part) continue;
-      metricPattern.lastIndex = 0;
-      if (metricPattern.test(part)) {
+    } else {
+      // Fallback: regex-based metric bolding for older data without markers
+      const metricPattern = /((?:[₹$])\s*\d+[\d,.]*\s*[KkMmLl]*(?:\s*(?:Cr|cr|Lakh|lakh|crore))?\s*\+?\s*(?:revenue|users|customers|leads|growth|improvement|reduction|increase)?|\d+[\d,.]*\s*[%xX]+(?:\s+(?:growth|improvement|increase|reduction|conversion|revenue|ROI|margin))?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|members|participants|team|employees|stores|cities|brands|clients|partners|campaigns|experiments|projects|products|months|years|weeks|days|cr|lakh|Cr|Lakh|crore|million|billion|[KkMm])\w*)/gi;
+      const parts = text.split(metricPattern);
+      for (const part of parts) {
+        if (!part) continue;
         metricPattern.lastIndex = 0;
-        runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
-      } else {
-        runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
+        if (metricPattern.test(part)) {
+          metricPattern.lastIndex = 0;
+          runs.push(new TextRun({ text: part, bold: true, size: 21, font: 'Calibri' }));
+        } else {
+          runs.push(new TextRun({ text: part, size: 21, font: 'Calibri' }));
+        }
       }
     }
 
@@ -2693,17 +2705,21 @@ async function generatePdf(data) {
       doc.moveDown(0.35);
     };
 
-    // Smart bolding pattern: metrics, impact phrases, tools, technologies
+    // Helper: parse **bold** markers into segments
+    const parseBoldMarkers = (text) => {
+      const segments = [];
+      const parts = text.split(/\*\*(.+?)\*\*/g);
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i] === '') continue;
+        segments.push({ text: parts[i], bold: i % 2 === 1 });
+      }
+      return segments;
+    };
+
+    // Fallback: regex-based smart bolding for bullets without **markers**
     const smartBoldPattern = /(\d+[\d,.]*\s*[%xX+]+(?:\s+\w+(?:\s+\w+)?)?|\d+[\d,.]*\s*\+?\s*(?:users|customers|leads|team|employees|stores|cities|months|years|cr|lakh|million|billion|[KkMm])\w*|[₹$]\s*\d+[\d,.]*\w*)/gi;
 
-    // Helper: bullet point with smart bolding — fixed positions for all bullets
-    const pdfBullet = (text) => {
-      const currentY = doc.y;
-      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
-        .text('\u2022', BULLET_X, currentY);
-      doc.moveUp();
-
-      // Split text into bold (metrics/impact) and normal segments
+    const parseBoldFallback = (text) => {
       const segments = [];
       let lastIndex = 0;
       let match;
@@ -2718,11 +2734,25 @@ async function generatePdf(data) {
       if (lastIndex < text.length) {
         segments.push({ text: text.slice(lastIndex), bold: false });
       }
+      return segments;
+    };
+
+    // Helper: bullet point with smart bolding — fixed positions for all bullets
+    const pdfBullet = (text) => {
+      const currentY = doc.y;
+      doc.fontSize(10).fillColor(BLACK).font('Helvetica')
+        .text('\u2022', BULLET_X, currentY);
+      doc.moveUp();
+
+      // Use **markers** if present, otherwise fall back to regex
+      const hasMarkers = /\*\*.+?\*\*/.test(text);
+      const cleanText = hasMarkers ? text.replace(/\*\*/g, '') : text;
+      const segments = hasMarkers ? parseBoldMarkers(text) : parseBoldFallback(text);
 
       // If no bold segments, print plain
       if (segments.length <= 1 && !segments[0]?.bold) {
         doc.font('Helvetica').fontSize(10).fillColor(BLACK)
-          .text(text, BULLET_TEXT_X, doc.y, { width: BULLET_TEXT_W, lineGap: 2 });
+          .text(cleanText, BULLET_TEXT_X, doc.y, { width: BULLET_TEXT_W, lineGap: 2 });
         return;
       }
 
