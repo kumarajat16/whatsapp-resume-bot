@@ -1800,10 +1800,13 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     const claudeReply = await askClaude(resumeReq.id, incomingMsg);
 
     // Claude triggers early payment after enough data collected
-    if (claudeReply.trim() === 'SEND_PAYMENT') {
+    if (claudeReply.includes('SEND_PAYMENT')) {
+      // Send any acknowledgment text Claude wrote before the trigger
+      const preText = claudeReply.replace(/SEND_PAYMENT/g, '').trim();
+      if (preText) await sendWhatsApp(from, preText);
+
       await db.updateResumeRequestStatus(resumeReq.id, 'payment_pending');
       if (RAZORPAY_ENABLED) {
-        await sendWhatsApp(from, 'Nice — this gives me a solid foundation to work with.');
         await sendWhatsApp(from, "Let's unlock your resume and generate it properly.");
         await sendWhatsApp(from, "Today's special price is *₹49*.\n\nNormally it's ₹99.");
         const paymentMsg = await createPaymentLink(from, resumeReq);
@@ -1834,7 +1837,9 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
   if (status === 'payment_completed') {
     const claudeReply = await askClaude(resumeReq.id, incomingMsg);
 
-    if (claudeReply.trim() === 'GENERATE_RESUME') {
+    if (claudeReply.includes('GENERATE_RESUME')) {
+      const preText = claudeReply.replace(/GENERATE_RESUME/g, '').trim();
+      if (preText) await sendWhatsApp(from, preText);
       return await startDirectResumeGeneration(from, user, resumeReq);
     }
 
