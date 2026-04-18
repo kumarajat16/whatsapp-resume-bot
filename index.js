@@ -1481,6 +1481,7 @@ tr:hover{background:#fafbfc}
 .state-paid{background:#d4edda;color:#155724}
 .state-awaiting_input{background:#e2e3e5;color:#383d41}
 .state-abandoned{background:#f8d7da;color:#721c24}
+.state-terminated{background:#e0e0e0;color:#424242}
 .state-no_session{background:#f8f9fa;color:#666}
 .state-preview_ready{background:#d1ecf1;color:#0c5460}
 .pay-paid{color:#155724;font-weight:600}
@@ -1530,6 +1531,7 @@ tr:hover{background:#fafbfc}
 <option value="resume_generated">resume_generated</option>
 <option value="completed">completed</option>
 <option value="abandoned">abandoned</option>
+<option value="terminated">terminated</option>
 </select>
 </div>
 <div class="filter">
@@ -1747,7 +1749,28 @@ if (RAZORPAY_ENABLED) {
 // ─── Message handler (AI-driven) ─────────────────────────────────────────────
 
 async function handleMessage(from, user, incomingMsg) {
-  const lower = incomingMsg.toLowerCase().trim();
+  const trimmed = incomingMsg.trim();
+  const lower = trimmed.toLowerCase();
+
+  // Developer reset — terminate current session cleanly for re-testing
+  if (trimmed === 'RESET_CONVO' || trimmed === 'END_CONVO') {
+    const active = await db.getActiveResumeRequest(user.id);
+    if (active) {
+      await db.updateResumeRequestStatus(active.id, 'terminated');
+      await db.addMessage(active.id, 'system', 'conversation_terminated_by_reset', 'system');
+    }
+    const freshReq = await db.createResumeRequest(user.id, 'create');
+    await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
+    await sendWhatsApp(from,
+      'Conversation reset successfully ✅\n\n' +
+      'Starting a fresh session now.\n\n' +
+      'You can begin again by telling me:\n' +
+      '• Create a resume\n' +
+      '• Improve my resume'
+    );
+    const reply = await askClaude(freshReq.id, 'Hi');
+    return reply;
+  }
 
   // Menu / restart — abandon current session and start fresh with AI
   if (lower === 'menu' || lower === 'restart' || lower === '0') {

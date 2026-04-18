@@ -198,7 +198,7 @@ async function getUserLimits(userId) {
 async function getActiveResumeRequest(userId) {
   const result = await pool.query(
     `SELECT * FROM resume_requests
-     WHERE user_id = $1 AND status NOT IN ('completed', 'resume_generated', 'abandoned')
+     WHERE user_id = $1 AND status NOT IN ('completed', 'resume_generated', 'abandoned', 'terminated')
      ORDER BY created_at DESC LIMIT 1`,
     [userId]
   );
@@ -208,7 +208,7 @@ async function getActiveResumeRequest(userId) {
 async function createResumeRequest(userId, flow) {
   await pool.query(
     `UPDATE resume_requests SET status = 'abandoned', updated_at = NOW()
-     WHERE user_id = $1 AND status NOT IN ('completed', 'resume_generated', 'abandoned')`,
+     WHERE user_id = $1 AND status NOT IN ('completed', 'resume_generated', 'abandoned', 'terminated')`,
     [userId]
   );
   const result = await pool.query(
