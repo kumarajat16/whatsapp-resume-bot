@@ -256,69 +256,93 @@ async function sendProgressMessages(to, count) {
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are *ResumeWala* — a warm, professional WhatsApp resume-building assistant for Indian job seekers.
+const SYSTEM_PROMPT = `You are *ResumeWala* — a friendly, cheerful, slightly playful WhatsApp AI assistant that helps Indian job seekers create killer resumes.
 
-YOUR APPROACH:
-You are a friendly career advisor chatting on WhatsApp. You do NOT behave like a rigid form. You have natural conversations.
+PERSONALITY:
+You are NOT a formal HR system. You behave like a smart, friendly resume expert helping a friend build their career story.
+Your tone is: friendly, cheerful, light humor, conversational, confident, encouraging.
+Never sound robotic or overly formal. Think WhatsApp chat, not email.
+
+MESSAGE STYLE:
+- Keep messages SHORT. One idea per message.
+- No long paragraphs or walls of text.
+- Use *asterisks* for bold on key words.
+- Use - or • for bullet points.
+- Max 1-2 questions per message.
+- Feel free to use relevant emojis sparingly.
 
 FIRST MESSAGE:
-When a user messages for the first time, warmly greet them and ask whether they'd like to:
-- Upload an existing resume (PDF/Word) for improvement
-- Or create a new one from scratch by just talking to you
+Warmly greet the user. Example:
 
-Be conversational. Do NOT use numbered menus. Mention they can also send voice notes 🎤.
+Hey! I'm *ResumeWala* 👋
 
-CREATE-FROM-SCRATCH FLOW:
-Instead of asking rigid questions one by one, start with a single open-ended prompt like:
+Want to:
+1️⃣ Improve your existing resume
+2️⃣ Create a fresh new resume
 
-"Tell me about yourself — your education, work experience, skills, projects, achievements. Just share your journey and I'll turn it into a strong resume."
+Keep it marketing-friendly and inviting.
 
-Then mention: "You can type your answer or send a voice note 🎤 — whatever's easier."
+INFORMATION GATHERING:
+Ask ONE open-ended question to start:
 
-After the user responds:
-1. Extract all the information they shared
-2. Assess how much you have — if you have enough for 60-70% of a one-page resume, tell them:
-   "I already have a solid foundation for your resume! I can generate it now if you'd like."
-   Then suggest additional details that would make it stronger (projects, metrics, tools, certifications).
-3. If information is still limited, ask 1-2 conversational follow-up questions about the gaps — NOT rigid form questions.
+"Tell me a bit about your journey — work experience, education, projects, skills. Anything you'd like on your resume."
 
-FOLLOW-UP STYLE:
-- "Did you work on any interesting projects you'd like to highlight?"
-- "Any achievements you're especially proud of — awards, numbers, milestones?"
-- "What tools or technologies do you work with most?"
-- NEVER ask like: "Name:", "Address:", "Phone:"
+Encourage voice notes: "You can also send a voice note if that's easier 🎤"
 
-WHEN USER IS DONE:
-If the user says "that's all", "nothing else", "done", "generate", or similar — proceed to generate.
-Even if content is limited, generate the best possible resume with what you have.
+IF ANSWER IS TOO SHORT (e.g. "software engineer"):
+- Message 1: Acknowledge warmly ("Nice! Software engineering — great field.")
+- Message 2: Encourage detail ("You can send a voice note if that's easier. Just explain your experience and projects — I'll handle the rest.")
 
-When ready to generate, say something like:
-"Great, I have what I need! Reply *YES* and I'll generate your resume."
+IF ANSWER IS DETAILED:
+- Do NOT push voice notes.
+- Acknowledge: "Perfect — that helps a lot."
+- Ask 2-3 targeted follow-ups about gaps (achievements, metrics, tools).
 
-When user confirms YES/yes/y, respond with EXACTLY: GENERATE_RESUME
+WHEN ENOUGH DATA EXISTS:
+When you have enough info for a solid resume foundation (name, experience OR education, some skills), you MUST trigger payment.
+
+Say something like:
+"Nice — this gives me a solid idea of your experience."
+
+Then respond with EXACTLY: SEND_PAYMENT
+Do not add any other text with SEND_PAYMENT.
+
+IMPORTANT: Trigger SEND_PAYMENT as soon as you have one solid chunk of information. Do NOT wait for every field to be perfect. You can collect more details AFTER payment.
+
+AFTER PAYMENT IS COMPLETED:
+The system will tell you "Payment received. Continue collecting details."
+After this:
+- Acknowledge: "Awesome! Payment received 🎉 Let's continue building your resume."
+- Summarize what you already have.
+- Ask only about MISSING details that would strengthen the resume (metrics, achievements, tools, certifications).
+- Keep it to 2-3 focused questions max.
+
+WHEN USER IS DONE (after payment):
+When user says "done", "that's all", "generate", or similar, OR you have enough data:
+Respond with EXACTLY: GENERATE_RESUME
 Do not add any other text with GENERATE_RESUME.
+
+IMPORTANT: GENERATE_RESUME should ONLY be triggered AFTER payment has been completed. Never trigger it before payment.
 
 IMPROVE FLOW:
 If user wants to improve an existing resume, ask them to upload their PDF or Word file.
 
 VOICE NOTE REMINDERS:
-Occasionally (not every message) remind users they can send voice notes 🎤.
+If user gives short answers, occasionally remind them about voice notes 🎤. Don't overdo it.
 
-FORMATTING RULES (critical):
-- Use *asterisks* for bold on key words, names, sections
-- Use - (hyphen) as bullet points
-- Break messages into short paragraphs with blank lines
-- Keep messages scannable — like ChatGPT on WhatsApp
-- Maximum 1-2 questions per message
-- If response would be long, split into focused parts
+FUN PERSONALITY EXAMPLES:
+- "Let's turn your career story into a killer resume 🚀"
+- "Don't worry about mistakes — voice notes are totally fine 😄"
+- "Trust me… resumes are my superpower."
 
 CONVERSATION RULES:
-- Be warm, encouraging, concise
-- NEVER re-ask for information already provided
-- For experience, coach users on ACTION + IMPACT + METRIC
-- If user gives vague answers, probe deeper with examples
-- Stay on topic — redirect off-topic gently
-- Do NOT answer general knowledge, jokes, or unrelated questions`;
+- Be warm, encouraging, concise.
+- NEVER re-ask for information already provided.
+- For experience, coach users on ACTION + IMPACT + METRIC.
+- If user gives vague answers, probe deeper with examples.
+- Stay on topic — redirect off-topic gently.
+- Do NOT answer general knowledge, jokes, or unrelated questions.
+- If user messages instead of paying, gently redirect to payment.`;
 
 const EXTRACT_PROMPT = `You are a resume data extractor. Given resume text, extract ALL information thoroughly. Return in this EXACT plain-text format. Do not use JSON. Do not add explanation.
 
@@ -1288,6 +1312,12 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         FROM messages m
         JOIN resume_requests rr ON m.resume_request_id = rr.id
         GROUP BY rr.user_id
+      ),
+      payment_info AS (
+        SELECT DISTINCT ON (rr.user_id) rr.user_id, p.status AS payment_status, p.updated_at AS payment_at
+        FROM payments p
+        JOIN resume_requests rr ON p.resume_request_id = rr.id
+        ORDER BY rr.user_id, p.created_at DESC
       )
       SELECT
         u.id AS user_id,
@@ -1297,10 +1327,12 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         COALESCE(ms.chat_depth, 0)::int AS chat_depth,
         COALESCE(ms.audio_count, 0)::int AS audio_count,
         COALESCE(ms.document_count, 0)::int AS document_count,
-        lr.pdf_url
+        lr.pdf_url,
+        COALESCE(pi.payment_status, 'none') AS payment_status
       FROM users u
       LEFT JOIN latest_request lr ON lr.user_id = u.id
       LEFT JOIN message_stats ms ON ms.user_id = u.id
+      LEFT JOIN payment_info pi ON pi.user_id = u.id
     `;
 
     if (start_date) {
@@ -1425,21 +1457,28 @@ h1{color:#1F3864;font-size:24px;margin-bottom:16px}
 .filter .reset{background:#eee;color:#333}
 .filter .reset:hover{background:#ddd}
 .table-wrap{background:white;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:1000px}
+table{width:100%;border-collapse:collapse;min-width:1100px}
 th,td{padding:10px 12px;text-align:left;font-size:13px;border-bottom:1px solid #eee}
 th{background:#f8f9fa;color:#555;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.3px;position:sticky;top:0}
 tr:hover{background:#fafbfc}
 .view-btn{background:#1F3864;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px}
 .view-btn:hover{background:#2a4a7a}
 .state{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
-.state-paid{background:#d4edda;color:#155724}
-.state-completed{background:#cce5ff;color:#004085}
 .state-collecting_data{background:#fff3cd;color:#856404}
+.state-payment_pending{background:#fce4ec;color:#880e4f}
+.state-payment_completed{background:#d4edda;color:#155724}
+.state-generating{background:#e7f3ff;color:#0c63e4}
+.state-resume_generated{background:#c8e6c9;color:#1b5e20}
+.state-completed{background:#cce5ff;color:#004085}
+.state-paid{background:#d4edda;color:#155724}
 .state-awaiting_input{background:#e2e3e5;color:#383d41}
 .state-abandoned{background:#f8d7da;color:#721c24}
 .state-no_session{background:#f8f9fa;color:#666}
-.state-generating{background:#e7f3ff;color:#0c63e4}
 .state-preview_ready{background:#d1ecf1;color:#0c5460}
+.pay-paid{color:#155724;font-weight:600}
+.pay-pending,.pay-created{color:#856404}
+.pay-none{color:#999}
+.pay-failed{color:#721c24}
 .empty{padding:40px;text-align:center;color:#888}
 .overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 .overlay.show{display:flex}
@@ -1476,11 +1515,11 @@ tr:hover{background:#fafbfc}
 <label>State</label>
 <select id="stateFilter">
 <option value="">All</option>
-<option value="awaiting_input">awaiting_input</option>
 <option value="collecting_data">collecting_data</option>
-<option value="paid">paid</option>
+<option value="payment_pending">payment_pending</option>
+<option value="payment_completed">payment_completed</option>
 <option value="generating">generating</option>
-<option value="preview_ready">preview_ready</option>
+<option value="resume_generated">resume_generated</option>
 <option value="completed">completed</option>
 <option value="abandoned">abandoned</option>
 </select>
@@ -1515,9 +1554,10 @@ tr:hover{background:#fafbfc}
 <th>Audio</th>
 <th>Docs</th>
 <th>Chat Depth</th>
+<th>Payment</th>
 <th>Resume</th>
 </tr></thead>
-<tbody id="tbody"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody>
+<tbody id="tbody"><tr><td colspan="10" class="loading">Loading...</td></tr></tbody>
 </table>
 </div>
 
@@ -1550,20 +1590,21 @@ async function loadData(){
   if(st)qs.set('state',st);
   if(cd)qs.set('chat_depth',cd);
   const tbody=document.getElementById('tbody');
-  tbody.innerHTML='<tr><td colspan="9" class="loading">Loading...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="10" class="loading">Loading...</td></tr>';
   try{
     const r=await fetch('/admin/conversations?'+qs.toString());
     if(r.status===401){window.location.reload();return;}
     const data=await r.json();
     if(!data.rows||data.rows.length===0){
-      tbody.innerHTML='<tr><td colspan="9" class="empty">No users found</td></tr>';
+      tbody.innerHTML='<tr><td colspan="10" class="empty">No users found</td></tr>';
       return;
     }
     tbody.innerHTML=data.rows.map(row=>{
       const state=esc(row.state);
-      const resumeCell=row.pdf_url
+      const ps=esc(row.payment_status||'none');
+      const resumeCell=(row.state==='resume_generated'||row.state==='completed')&&row.pdf_url
         ?'<a href="'+esc(row.pdf_url)+'" target="_blank" rel="noopener" class="view-btn" style="text-decoration:none;display:inline-block">View Resume</a>'
-        :'<span style="color:#999;font-size:12px">Not Generated</span>';
+        :'<span style="color:#999;font-size:12px">—</span>';
       return '<tr>'+
         '<td>'+esc(String(row.user_id).slice(0,8))+'...</td>'+
         '<td>'+esc(row.phone_number)+'</td>'+
@@ -1573,6 +1614,7 @@ async function loadData(){
         '<td class="count">'+row.audio_count+'</td>'+
         '<td class="count">'+row.document_count+'</td>'+
         '<td class="count">'+row.chat_depth+'</td>'+
+        '<td><span class="pay-'+ps+'">'+ps+'</span></td>'+
         '<td>'+resumeCell+'</td>'+
       '</tr>';
     }).join('');
@@ -1580,7 +1622,7 @@ async function loadData(){
       b.addEventListener('click',()=>openChat(b.dataset.phone));
     });
   }catch(e){
-    tbody.innerHTML='<tr><td colspan="9" class="empty">Error loading data</td></tr>';
+    tbody.innerHTML='<tr><td colspan="10" class="empty">Error loading data</td></tr>';
   }
 }
 
@@ -1671,16 +1713,18 @@ if (RAZORPAY_ENABLED) {
         // Avoid double-processing
         const reqCheck = await db.pool.query('SELECT status FROM resume_requests WHERE id = $1', [resumeRequestId]);
         const currentStatus = reqCheck.rows[0]?.status;
-        if (currentStatus === 'completed' || currentStatus === 'generating') {
+        if (currentStatus === 'completed' || currentStatus === 'resume_generated' || currentStatus === 'generating' || currentStatus === 'payment_completed') {
           return res.json({ status: 'ok' });
         }
 
-        await db.updateResumeRequestStatus(resumeRequestId, 'paid');
+        await db.updateResumeRequestStatus(resumeRequestId, 'payment_completed');
         await db.addMessage(resumeRequestId, 'system', 'payment_completed', 'system');
         console.log('Payment verified:', paymentId);
-        processFullResume(phone, resumeRequestId).catch(err => {
-          console.error('Post-payment resume generation error:', err);
-        });
+
+        // Seed Claude context so it knows payment is done
+        await db.addMessage(resumeRequestId, 'incoming', 'Payment received. Continue collecting details.');
+        const postPaymentReply = await askClaudeRaw(resumeRequestId);
+        await sendWhatsApp(phone, postPaymentReply).catch(console.error);
       }
 
       res.json({ status: 'ok' });
@@ -1727,7 +1771,6 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
   // ─── awaiting_input: waiting for file (improve flow) or first message
   if (status === 'awaiting_input') {
     if (resumeReq.flow === 'improve') {
-      // User said they want to improve but hasn't uploaded yet — remind via AI
       const reply = await askClaude(resumeReq.id, incomingMsg);
       return reply;
     }
@@ -1736,22 +1779,8 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     return reply;
   }
 
-  // ─── collecting_data: conversation with Claude
+  // ─── collecting_data: conversation with Claude (before payment)
   if (status === 'collecting_data') {
-    if (lower === 'generate resume' || lower === 'generate' || lower === 'gen') {
-      return await startResumeGeneration(from, user, resumeReq);
-    }
-
-    if (lower === 'edit resume' || lower === 'edit') {
-      const data = await db.getResumeData(resumeReq.id);
-      if (!data || !data.name) {
-        return 'No resume data yet. Let me ask you some questions first!\n\nWhat is your full name?';
-      }
-      const reply = await askClaude(resumeReq.id,
-        'I want to edit my resume. Ask me what section I want to change.');
-      return reply;
-    }
-
     // Check if user wants to upload a resume (switch to improve flow)
     if (lower.includes('upload') || lower.includes('improve') || lower.includes('existing resume')) {
       await db.updateResumeRequestFlow(resumeReq.id, 'improve');
@@ -1762,52 +1791,53 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
     // Normal conversation with Claude
     const claudeReply = await askClaude(resumeReq.id, incomingMsg);
 
-    if (claudeReply.trim() === 'GENERATE_RESUME') {
-      return await startResumeGeneration(from, user, resumeReq);
+    // Claude triggers early payment after enough data collected
+    if (claudeReply.trim() === 'SEND_PAYMENT') {
+      await db.updateResumeRequestStatus(resumeReq.id, 'payment_pending');
+      if (RAZORPAY_ENABLED) {
+        await sendWhatsApp(from, 'Nice — this gives me a solid idea of your experience.\n\nQuick heads up before we continue.');
+        await sendWhatsApp(from, "Today's special price is *₹49*.\n\nIf we complete everything and generate the resume later, the price becomes ₹99.");
+        const paymentMsg = await createPaymentLink(from, resumeReq);
+        return 'You can unlock your resume for ₹49 here:\n\n' + paymentMsg;
+      }
+      // Free mode — skip payment, go straight to post-payment collecting
+      await db.updateResumeRequestStatus(resumeReq.id, 'payment_completed');
+      return 'Great — let me ask a few more questions to make your resume even stronger.';
     }
 
     return claudeReply;
   }
 
-  // ─── preview_ready: resume preview shown, waiting for action
-  if (status === 'preview_ready') {
-    if (lower === '1' || lower === 'download' || lower === 'yes') {
-      if (RAZORPAY_ENABLED) {
-        return await createPaymentLink(from, resumeReq);
-      }
-      return await startFullResumeGeneration(from, user, resumeReq);
-    }
-    if (lower === '2' || lower === 'edit') {
-      await db.updateResumeRequestStatus(resumeReq.id, 'collecting_data');
-      const reply = await askClaude(resumeReq.id,
-        'I want to edit my resume before downloading. Ask me what I want to change.');
-      return reply;
-    }
-    if (lower === '3' || lower === 'new' || lower === 'restart') {
-      await db.updateResumeRequestStatus(resumeReq.id, 'abandoned');
-      const freshReq = await db.createResumeRequest(user.id, 'create');
-      await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
-      const reply = await askClaude(freshReq.id, 'Hi, I want to start a new resume.');
-      return reply;
-    }
+  // ─── payment_pending: waiting for payment
+  if (status === 'payment_pending') {
+    // Politely redirect to payment
     if (RAZORPAY_ENABLED) {
-      return 'Reply:\n*1* - Get payment link\n*2* - Edit something\n*3* - Start over';
+      return 'Almost there 🙂\n\nJust complete the ₹49 step first so I can generate your resume.\n\nOnce that\'s done we\'ll continue exactly where we left off.';
     }
-    return 'Reply:\n*1* - Download resume\n*2* - Edit something\n*3* - Start over';
+    // Free mode fallback
+    await db.updateResumeRequestStatus(resumeReq.id, 'payment_completed');
+    const reply = await askClaude(resumeReq.id, 'Payment received. Continue collecting details.');
+    return reply;
   }
 
-  // ─── paid: payment received, generating
-  if (status === 'paid') {
-    return 'Your payment was received! Resume is being generated...';
+  // ─── payment_completed: continue collecting details, then generate
+  if (status === 'payment_completed') {
+    const claudeReply = await askClaude(resumeReq.id, incomingMsg);
+
+    if (claudeReply.trim() === 'GENERATE_RESUME') {
+      return await startDirectResumeGeneration(from, user, resumeReq);
+    }
+
+    return claudeReply;
   }
 
-  // ─── generating
-  if (status === 'generating') {
+  // ─── generating / paid: resume is being generated
+  if (status === 'generating' || status === 'paid') {
     return 'Your resume is being generated. Please wait a moment...';
   }
 
-  // ─── completed: start fresh with AI
-  if (status === 'completed') {
+  // ─── resume_generated / completed: start fresh with AI
+  if (status === 'resume_generated' || status === 'completed') {
     const freshReq = await db.createResumeRequest(user.id, 'create');
     await db.updateResumeRequestStatus(freshReq.id, 'collecting_data');
     const reply = await askClaude(freshReq.id, incomingMsg);
@@ -1823,7 +1853,7 @@ async function handleActiveSession(from, user, resumeReq, incomingMsg) {
 
 // ─── Resume generation triggers ──────────────────────────────────────────────
 
-async function startResumeGeneration(from, user, resumeReq) {
+async function startDirectResumeGeneration(from, user, resumeReq) {
   const limits = await db.getUserLimits(user.id);
   if (limits.daily_resumes >= DAILY_RESUME_LIMIT) {
     return 'System usage limit reached. Please try again tomorrow.';
@@ -1832,25 +1862,15 @@ async function startResumeGeneration(from, user, resumeReq) {
   await db.updateResumeRequestStatus(resumeReq.id, 'generating');
   await db.incrementResumeCount(user.id);
 
-  processResumePreview(from, resumeReq.id).catch(err => {
-    console.error('Resume generation error:', err);
-    db.updateResumeRequestStatus(resumeReq.id, 'collecting_data').catch(console.error);
-    sendWhatsApp(from, 'Sorry, there was an error. Please try again by typing "generate".').catch(console.error);
-  });
-
-  return 'Generating your resume...';
-}
-
-async function startFullResumeGeneration(from, user, resumeReq) {
-  await db.updateResumeRequestStatus(resumeReq.id, 'generating');
-
+  // Send loader messages, then generate directly (no preview step)
+  sendWhatsApp(from, 'Generating your resume...').catch(console.error);
   processFullResume(from, resumeReq.id).catch(err => {
-    console.error('Full resume generation error:', err);
-    db.updateResumeRequestStatus(resumeReq.id, 'preview_ready').catch(console.error);
-    sendWhatsApp(from, 'Error generating your resume file. Reply "1" to try again.').catch(console.error);
+    console.error('Resume generation error:', err);
+    db.updateResumeRequestStatus(resumeReq.id, 'payment_completed').catch(console.error);
+    sendWhatsApp(from, 'Sorry, there was an error. Please try again by saying "generate".').catch(console.error);
   });
 
-  return 'Creating your resume file...';
+  return 'Creating your resume file — this will take a moment ✨';
 }
 
 // ─── Async processors ────────────────────────────────────────────────────────
@@ -1936,7 +1956,7 @@ async function processFullResume(from, resumeRequestId) {
   await db.saveResumeUrls(resumeRequestId, pdfUrl, docxUrl);
   await db.addMessage(resumeRequestId, 'system', 'resume_generated', 'system');
 
-  await db.updateResumeRequestStatus(resumeRequestId, 'completed');
+  await db.updateResumeRequestStatus(resumeRequestId, 'resume_generated');
   console.log('Resume generation completed');
 
   // Send download links (direct WhatsApp file sending temporarily disabled)
@@ -2146,6 +2166,31 @@ async function askClaude(resumeRequestId, userMessage) {
   const messages = await db.getConversationMessages(resumeRequestId);
 
   // Prepend uploaded resume summary if available
+  const resumeSummary = await db.getResumeSummary(resumeRequestId);
+  let systemPrompt = SYSTEM_PROMPT;
+  if (resumeSummary) {
+    systemPrompt += '\n\nUPLOADED RESUME SUMMARY\n\n' + resumeSummary +
+      '\n\nThe user has already provided the above information in their uploaded resume or documents. ' +
+      'Do not ask the user again for information already contained in this summary. ' +
+      'Only ask questions about missing details that could strengthen the resume.';
+  }
+
+  const response = await anthropic.messages.create({
+    model: 'claude-opus-4-6',
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages,
+  });
+
+  const assistantText = response.content[0].text;
+  await db.addMessage(resumeRequestId, 'outgoing', assistantText);
+  return assistantText;
+}
+
+// askClaudeRaw: same as askClaude but does NOT add the incoming message (already added by caller)
+async function askClaudeRaw(resumeRequestId) {
+  const messages = await db.getConversationMessages(resumeRequestId);
+
   const resumeSummary = await db.getResumeSummary(resumeRequestId);
   let systemPrompt = SYSTEM_PROMPT;
   if (resumeSummary) {
