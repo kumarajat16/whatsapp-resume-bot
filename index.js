@@ -1945,11 +1945,25 @@ async function processResumePreview(from, resumeRequestId) {
 }
 
 async function processFullResume(from, resumeRequestId) {
+  // Dynamically build resume data from all available sources
+  await extractAndSaveFromConversation(resumeRequestId);
   const data = await db.getResumeData(resumeRequestId);
 
+  // Only fail if BOTH conversation messages AND resume file are empty
   if (!data || !data.name) {
-    await sendWhatsApp(from, 'No resume data found. Please start over by typing "menu".');
-    return;
+    const messages = await db.getConversationMessages(resumeRequestId);
+    const resumeSummary = await db.getResumeSummary(resumeRequestId);
+    if ((!messages || messages.length === 0) && !resumeSummary) {
+      await sendWhatsApp(from, 'No resume data found. Please start over by typing "menu".');
+      return;
+    }
+    // Conversation exists but extraction failed to get a name — retry won't help
+    // Use phone number as fallback name so generation can proceed
+    if (!data) {
+      await sendWhatsApp(from, 'Could not extract resume details. Please start over by typing "menu".');
+      return;
+    }
+    if (!data.name) data.name = 'Your Name';
   }
 
   console.log('Resume generation started');
