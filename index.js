@@ -1727,6 +1727,369 @@ loadData();
 </script>
 </body></html>`;
 
+// ─── LinkedIn Profile Discovery (testing tool) ─────────────────────────────
+
+app.get('/linkedin-test', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>LinkedIn Profile Discovery — ResumeWala</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f7fa;color:#333;min-height:100vh}
+.header{background:#1F3864;color:white;padding:20px 24px;text-align:center}
+.header h1{font-size:22px;font-weight:600}
+.header p{font-size:13px;opacity:0.8;margin-top:4px}
+.container{max-width:700px;margin:24px auto;padding:0 16px}
+.card{background:white;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.08);padding:24px;margin-bottom:20px}
+.card h2{font-size:16px;color:#1F3864;margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:600;color:#555;margin-bottom:4px}
+input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;outline:none;transition:border 0.2s}
+input:focus{border-color:#1F3864}
+.btn{background:#1F3864;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;width:100%;transition:background 0.2s}
+.btn:hover{background:#2a4a7a}
+.btn:disabled{background:#999;cursor:not-allowed}
+.results{display:none}
+.profile-card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:12px;transition:box-shadow 0.2s}
+.profile-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+.profile-name{font-size:16px;font-weight:700;color:#1F3864}
+.profile-headline{font-size:13px;color:#555;margin-top:2px}
+.profile-url{font-size:12px;color:#888;margin-top:4px;word-break:break-all}
+.profile-actions{margin-top:12px;display:flex;gap:8px}
+.btn-sm{padding:8px 16px;font-size:12px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
+.btn-confirm{background:#10b981;color:white}
+.btn-confirm:hover{background:#059669}
+.btn-skip{background:#e5e7eb;color:#555}
+.btn-skip:hover{background:#d1d5db}
+.loading{text-align:center;padding:24px;color:#888;font-size:14px}
+.spinner{display:inline-block;width:20px;height:20px;border:3px solid #ddd;border-top-color:#1F3864;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.error{background:#fef2f2;color:#dc2626;padding:12px;border-radius:8px;font-size:13px;margin-bottom:12px}
+.extracted-data{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:20px}
+.extracted-data h3{font-size:15px;color:#1F3864;margin-bottom:12px}
+.data-section{margin-bottom:16px}
+.data-section h4{font-size:13px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px}
+.data-section p,.data-section li{font-size:14px;line-height:1.6}
+.data-section ul{padding-left:20px}
+.tag{display:inline-block;background:#e0e7ff;color:#3730a3;padding:3px 10px;border-radius:12px;font-size:12px;margin:2px 4px 2px 0}
+</style></head><body>
+<div class="header">
+  <h1>LinkedIn Profile Discovery</h1>
+  <p>Internal testing tool — ResumeWala</p>
+</div>
+<div class="container">
+  <div class="card">
+    <h2>Search for a LinkedIn Profile</h2>
+    <label>Full Name</label>
+    <input type="text" id="name" placeholder="Rajat Sharma">
+    <label>Company</label>
+    <input type="text" id="company" placeholder="Naukri">
+    <label>Designation</label>
+    <input type="text" id="designation" placeholder="Senior Product Manager">
+    <button class="btn" id="searchBtn" onclick="doSearch()">Find LinkedIn Profile</button>
+  </div>
+  <div id="resultsSection" class="results">
+    <div class="card" id="resultsCard"></div>
+  </div>
+  <div id="extractedSection" style="display:none">
+    <div class="card" id="extractedCard"></div>
+  </div>
+</div>
+<script>
+const esc = s => {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+};
+
+async function doSearch() {
+  const name = document.getElementById('name').value.trim();
+  const company = document.getElementById('company').value.trim();
+  const designation = document.getElementById('designation').value.trim();
+  if (!name) { alert('Please enter a name'); return; }
+
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+
+  const resultsSection = document.getElementById('resultsSection');
+  const resultsCard = document.getElementById('resultsCard');
+  document.getElementById('extractedSection').style.display = 'none';
+  resultsSection.style.display = 'block';
+  resultsCard.innerHTML = '<div class="loading"><span class="spinner"></span>Searching Google for LinkedIn profiles…</div>';
+
+  try {
+    const res = await fetch('/linkedin-test/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, company, designation })
+    });
+    const data = await res.json();
+    if (data.error) {
+      resultsCard.innerHTML = '<div class="error">' + esc(data.error) + '</div>';
+      return;
+    }
+    if (!data.profiles || data.profiles.length === 0) {
+      resultsCard.innerHTML = '<div class="error">No LinkedIn profiles found. Try different search terms.</div>';
+      return;
+    }
+    resultsCard.innerHTML = '<h2>Found ' + data.profiles.length + ' profile(s)</h2>';
+    data.profiles.forEach((p, i) => {
+      const div = document.createElement('div');
+      div.className = 'profile-card';
+      div.id = 'profile-' + i;
+      div.innerHTML =
+        '<div class="profile-name">' + esc(p.title || 'Unknown') + '</div>' +
+        '<div class="profile-headline">' + esc(p.snippet || '') + '</div>' +
+        '<div class="profile-url">' + esc(p.url) + '</div>' +
+        '<div class="profile-actions"></div>';
+      const actions = div.querySelector('.profile-actions');
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn-sm btn-confirm';
+      confirmBtn.textContent = String.fromCharCode(10003) + ' Yes, this is correct';
+      confirmBtn.onclick = () => confirmProfile(p.url, i);
+      const skipBtn = document.createElement('button');
+      skipBtn.className = 'btn-sm btn-skip';
+      skipBtn.textContent = 'Show next';
+      skipBtn.onclick = () => skipProfile(i);
+      actions.appendChild(confirmBtn);
+      actions.appendChild(skipBtn);
+      resultsCard.appendChild(div);
+    });
+  } catch (e) {
+    resultsCard.innerHTML = '<div class="error">Search failed: ' + esc(e.message) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Find LinkedIn Profile';
+  }
+}
+
+function skipProfile(index) {
+  const card = document.getElementById('profile-' + index);
+  if (card) card.style.display = 'none';
+}
+
+async function confirmProfile(url, index) {
+  const card = document.getElementById('profile-' + index);
+  const actions = card.querySelector('.profile-actions');
+  actions.innerHTML = '<span class="spinner"></span> Extracting profile data…';
+
+  const extractedSection = document.getElementById('extractedSection');
+  const extractedCard = document.getElementById('extractedCard');
+  extractedSection.style.display = 'block';
+  extractedCard.innerHTML = '<div class="loading"><span class="spinner"></span>Fetching and parsing LinkedIn profile…</div>';
+
+  try {
+    const res = await fetch('/linkedin-test/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (data.error) {
+      extractedCard.innerHTML = '<div class="error">' + esc(data.error) + '</div>';
+      return;
+    }
+    actions.innerHTML = '<span style="color:#10b981;font-weight:600">✓ Confirmed</span>';
+    renderExtracted(data.profile);
+  } catch (e) {
+    extractedCard.innerHTML = '<div class="error">Extraction failed: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderExtracted(p) {
+  const extractedCard = document.getElementById('extractedCard');
+  let html = '<h2>Extracted Resume Context</h2><div class="extracted-data">';
+
+  html += '<div class="data-section"><h4>Name</h4><p>' + esc(p.name || 'N/A') + '</p></div>';
+  html += '<div class="data-section"><h4>Headline</h4><p>' + esc(p.headline || 'N/A') + '</p></div>';
+  if (p.company) html += '<div class="data-section"><h4>Current Company</h4><p>' + esc(p.company) + '</p></div>';
+  if (p.location) html += '<div class="data-section"><h4>Location</h4><p>' + esc(p.location) + '</p></div>';
+
+  if (p.experience && p.experience.length) {
+    html += '<div class="data-section"><h4>Experience</h4><ul>';
+    p.experience.forEach(e => {
+      if (typeof e === 'string') { html += '<li>' + esc(e) + '</li>'; }
+      else { html += '<li><strong>' + esc(e.title || '') + '</strong>' + (e.company ? ' at ' + esc(e.company) : '') + (e.duration ? ' (' + esc(e.duration) + ')' : '') + '</li>'; }
+    });
+    html += '</ul></div>';
+  }
+
+  if (p.education && p.education.length) {
+    html += '<div class="data-section"><h4>Education</h4><ul>';
+    p.education.forEach(e => {
+      if (typeof e === 'string') { html += '<li>' + esc(e) + '</li>'; }
+      else { html += '<li><strong>' + esc(e.degree || e.school || '') + '</strong>' + (e.school && e.degree ? ' — ' + esc(e.school) : '') + (e.year ? ' (' + esc(e.year) + ')' : '') + '</li>'; }
+    });
+    html += '</ul></div>';
+  }
+
+  if (p.skills && p.skills.length) {
+    html += '<div class="data-section"><h4>Skills</h4><div>';
+    p.skills.forEach(s => { html += '<span class="tag">' + esc(s) + '</span>'; });
+    html += '</div></div>';
+  }
+
+  if (p.about) html += '<div class="data-section"><h4>About</h4><p>' + esc(p.about) + '</p></div>';
+
+  html += '</div>';
+
+  // Raw JSON
+  html += '<details style="margin-top:16px"><summary style="cursor:pointer;font-size:13px;color:#888">View raw JSON</summary>';
+  html += '<pre style="background:#f1f5f9;padding:12px;border-radius:8px;font-size:12px;overflow-x:auto;margin-top:8px">' + esc(JSON.stringify(p, null, 2)) + '</pre></details>';
+
+  extractedCard.innerHTML = html;
+}
+</script>
+</body></html>`);
+});
+
+// LinkedIn search endpoint
+app.post('/linkedin-test/search', async (req, res) => {
+  const { name, company, designation } = req.body;
+  if (!name) return res.json({ error: 'Name is required' });
+
+  const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+  const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
+  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) {
+    return res.json({ error: 'Google Custom Search API not configured. Set GOOGLE_API_KEY and GOOGLE_CSE_ID environment variables.' });
+  }
+
+  try {
+    // Build search query
+    let query = `site:linkedin.com/in "${name}"`;
+    if (company) query += ` "${company}"`;
+    if (designation) query += ` "${designation}"`;
+
+    const params = new URLSearchParams({
+      q: query,
+      key: GOOGLE_API_KEY,
+      cx: GOOGLE_CSE_ID,
+      num: '10',
+    });
+
+    const searchRes = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`);
+    const searchData = await searchRes.json();
+
+    if (searchData.error) {
+      return res.json({ error: `Google API error: ${searchData.error.message}` });
+    }
+
+    // Filter to linkedin.com/in/ profiles only
+    const profiles = (searchData.items || [])
+      .filter(item => item.link && item.link.includes('linkedin.com/in/'))
+      .filter(item => !item.link.includes('/company/') && !item.link.includes('/jobs/'))
+      .slice(0, 3)
+      .map(item => ({
+        title: item.title || '',
+        snippet: item.snippet || '',
+        url: item.link,
+      }));
+
+    res.json({ profiles });
+  } catch (err) {
+    console.error('[LINKEDIN_SEARCH_ERROR]', err.message);
+    res.json({ error: 'Search failed: ' + err.message });
+  }
+});
+
+// LinkedIn profile extraction endpoint
+app.post('/linkedin-test/extract', async (req, res) => {
+  const { url } = req.body;
+  if (!url || !url.includes('linkedin.com/in/')) {
+    return res.json({ error: 'Invalid LinkedIn profile URL' });
+  }
+
+  try {
+    // Fetch LinkedIn profile HTML
+    const profileRes = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+    });
+
+    if (!profileRes.ok) {
+      return res.json({ error: `Could not fetch profile (HTTP ${profileRes.status}). LinkedIn may be blocking the request.` });
+    }
+
+    const html = await profileRes.text();
+
+    // Try to extract JSON-LD structured data first
+    let structuredData = null;
+    const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/i);
+    if (jsonLdMatch) {
+      try { structuredData = JSON.parse(jsonLdMatch[1]); } catch (e) { /* ignore */ }
+    }
+
+    // Extract useful text from meta tags and visible content
+    const metaDesc = (html.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"/) || [])[1] || '';
+    const ogTitle = (html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/) || [])[1] || '';
+    const title = (html.match(/<title>([^<]*)<\/title>/) || [])[1] || '';
+
+    // Strip HTML tags for a text snapshot
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    let bodyText = '';
+    if (bodyMatch) {
+      bodyText = bodyMatch[1]
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 8000);
+    }
+
+    // Build context for LLM extraction
+    let extractionContext = `LinkedIn Profile URL: ${url}\n\n`;
+    if (structuredData) extractionContext += `Structured Data (JSON-LD):\n${JSON.stringify(structuredData, null, 2)}\n\n`;
+    if (ogTitle) extractionContext += `Page Title: ${ogTitle}\n`;
+    if (metaDesc) extractionContext += `Meta Description: ${metaDesc}\n\n`;
+    if (bodyText) extractionContext += `Page Text Content:\n${bodyText}\n`;
+
+    // Use Claude to extract structured profile data
+    const extraction = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: `Extract structured profile information from this LinkedIn page content. Return ONLY valid JSON with no explanation.
+
+${extractionContext}
+
+Return this exact JSON structure (use empty string or empty array if not found):
+{
+  "name": "",
+  "headline": "",
+  "company": "",
+  "location": "",
+  "about": "",
+  "experience": [
+    { "title": "", "company": "", "duration": "", "description": "" }
+  ],
+  "education": [
+    { "degree": "", "school": "", "year": "" }
+  ],
+  "skills": []
+}`
+      }],
+    });
+
+    const responseText = extraction.content[0].text;
+    // Parse JSON from response (handle markdown code blocks)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return res.json({ error: 'Could not extract profile data. LinkedIn may require authentication to view full profiles.' });
+    }
+
+    const profile = JSON.parse(jsonMatch[0]);
+    res.json({ profile });
+  } catch (err) {
+    console.error('[LINKEDIN_EXTRACT_ERROR]', err.message);
+    res.json({ error: 'Extraction failed: ' + err.message });
+  }
+});
+
 // Razorpay webhook
 if (RAZORPAY_ENABLED) {
   app.post('/razorpay-webhook', async (req, res) => {
