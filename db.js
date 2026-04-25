@@ -138,6 +138,7 @@ async function initDb() {
   await addUserCol('ad_short_id', 'TEXT');
   await addUserCol('fbclid', 'TEXT');
   await addUserCol('ad_source', 'TEXT');
+  await addUserCol('last_followup_sent_at', 'TIMESTAMPTZ');
 
   // Add resume URL columns to resume_requests
   const addReqCol = async (col, type) => {
@@ -581,6 +582,67 @@ async function deleteTemplate(id) {
   return result.rowCount > 0;
 }
 
+// ─── Drop-off follow-up helpers ───────────────────────────────────────────
+
+// Returns users who:
+//   - sent their last incoming message between 1h and 24h ago (still inside
+//     WhatsApp's 24h customer-service window, but inactive for 1h+)
+//   - have a latest resume_request whose status maps to a follow-up stage
+//   - haven't received a follow-up in the last 24h
+async function getDropoffCandidates(limit) {
+  const result = await pool.query(
+    `WITH latest_request AS (
+       SELECT DISTINCT ON (user_id) user_id, id AS request_id, status, flow
+       FROM resume_requests
+       ORDER BY user_id, created_at DESC
+     ),
+     last_user_msg AS (
+       SELECT rr.user_id, MAX(m.created_at) AS last_at
+       FROM messages m
+       JOIN resume_requests rr ON m.resume_request_id = rr.id
+       WHERE m.direction = 'incoming'
+       GROUP BY rr.user_id
+     )
+     SELECT
+       u.id AS user_id,
+       u.phone_number,
+       u.last_followup_sent_at,
+       lr.request_id,
+       lr.status,
+       lum.last_at AS last_user_message_at,
+       CASE
+         WHEN lr.status IN ('awaiting_input', 'collecting_data') THEN 1
+         WHEN lr.status = 'payment_pending' THEN 2
+         WHEN lr.status IN ('payment_completed', 'generating') THEN 3
+         ELSE NULL
+       END AS dropoff_stage
+     FROM users u
+     JOIN latest_request lr ON lr.user_id = u.id
+     JOIN last_user_msg lum ON lum.user_id = u.id
+     WHERE lum.last_at >= NOW() - INTERVAL '24 hours'
+       AND lum.last_at <= NOW() - INTERVAL '1 hour'
+       AND lr.status IN ('awaiting_input', 'collecting_data', 'payment_pending', 'payment_completed', 'generating')
+       AND (u.last_followup_sent_at IS NULL OR u.last_followup_sent_at <= NOW() - INTERVAL '24 hours')
+     ORDER BY lum.last_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows;
+}
+
+// Atomic claim: only one process can mark a user as followed-up per 24h
+async function markFollowupSent(userId) {
+  const result = await pool.query(
+    `UPDATE users
+     SET last_followup_sent_at = NOW(), updated_at = NOW()
+     WHERE id = $1
+       AND (last_followup_sent_at IS NULL OR last_followup_sent_at <= NOW() - INTERVAL '24 hours')
+     RETURNING id`,
+    [userId]
+  );
+  return result.rowCount > 0;
+}
+
 module.exports = {
   pool,
   initDb,
@@ -619,4 +681,6 @@ module.exports = {
   createTemplate,
   updateTemplate,
   deleteTemplate,
+  getDropoffCandidates,
+  markFollowupSent,
 };

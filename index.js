@@ -1413,7 +1413,14 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         lr.pdf_url,
         lr.id AS latest_request_id,
         COALESCE(gc.cnt, 0) AS generated_resume_count,
-        COALESCE(pi.payment_status, 'none') AS payment_status
+        COALESCE(pi.payment_status, 'none') AS payment_status,
+        u.last_followup_sent_at,
+        CASE
+          WHEN lr.status IN ('awaiting_input', 'collecting_data') THEN 1
+          WHEN lr.status = 'payment_pending' THEN 2
+          WHEN lr.status IN ('payment_completed', 'generating') THEN 3
+          ELSE NULL
+        END AS dropoff_stage
       FROM users u
       LEFT JOIN latest_request lr ON lr.user_id = u.id
       LEFT JOIN message_stats ms ON ms.user_id = u.id
@@ -1827,6 +1834,10 @@ tr:hover{background:#fafbfc}
 .pay-pending,.pay-created{color:#856404}
 .pay-none{color:#999}
 .pay-failed{color:#721c24}
+.stage{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
+.stage-1{background:#fff3cd;color:#856404}
+.stage-2{background:#fce4ec;color:#880e4f}
+.stage-3{background:#e7f3ff;color:#0c63e4}
 .empty{padding:40px;text-align:center;color:#888}
 .gen-btn{background:#0c63e4;color:white;border:none;padding:6px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap}
 .gen-btn:hover{background:#0a4fb8}
@@ -1939,8 +1950,10 @@ tr:hover{background:#fafbfc}
 <th>Resume</th>
 <th>Generate</th>
 <th>Resumes</th>
+<th>Last Followup (IST)</th>
+<th>Drop-off</th>
 </tr></thead>
-<tbody id="tbody"><tr><td colspan="12" class="loading">Loading...</td></tr></tbody>
+<tbody id="tbody"><tr><td colspan="14" class="loading">Loading...</td></tr></tbody>
 </table>
 </div>
 
@@ -1985,13 +1998,13 @@ async function loadData(){
   if(st)qs.set('state',st);
   if(cd)qs.set('chat_depth',cd);
   const tbody=document.getElementById('tbody');
-  tbody.innerHTML='<tr><td colspan="12" class="loading">Loading...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="14" class="loading">Loading...</td></tr>';
   try{
     const r=await fetch('/admin/conversations?'+qs.toString());
     if(r.status===401){window.location.reload();return;}
     const data=await r.json();
     if(!data.rows||data.rows.length===0){
-      tbody.innerHTML='<tr><td colspan="12" class="empty">No users found</td></tr>';
+      tbody.innerHTML='<tr><td colspan="14" class="empty">No users found</td></tr>';
       return;
     }
     tbody.innerHTML=data.rows.map(row=>{
@@ -2008,6 +2021,13 @@ async function loadData(){
       const historyCell=(conv&&cnt>0)
         ?'<button class="history-btn" data-conv="'+conv+'" data-phone="'+esc(row.phone_number)+'">View Resumes ('+cnt+')</button>'
         :'<span style="color:#999;font-size:12px">—</span>';
+      const followupCell=row.last_followup_sent_at
+        ?fmtIST(row.last_followup_sent_at)
+        :'<span style="color:#999;font-size:12px">—</span>';
+      const stageLabels={1:'Pre-payment',2:'Payment unpaid',3:'Paid · no resume'};
+      const stageCell=row.dropoff_stage
+        ?'<span class="stage stage-'+row.dropoff_stage+'">Stage '+row.dropoff_stage+' · '+esc(stageLabels[row.dropoff_stage]||'')+'</span>'
+        :'<span style="color:#999;font-size:12px">—</span>';
       return '<tr>'+
         '<td>'+esc(String(row.user_id).slice(0,8))+'...</td>'+
         '<td>'+esc(row.phone_number)+'</td>'+
@@ -2021,6 +2041,8 @@ async function loadData(){
         '<td>'+resumeCell+'</td>'+
         '<td>'+generateCell+'</td>'+
         '<td>'+historyCell+'</td>'+
+        '<td>'+followupCell+'</td>'+
+        '<td>'+stageCell+'</td>'+
       '</tr>';
     }).join('');
     document.querySelectorAll('.view-btn').forEach(b=>{
@@ -2036,7 +2058,7 @@ async function loadData(){
       b.addEventListener('click',()=>openResumeHistory(b.dataset.conv,b.dataset.phone));
     });
   }catch(e){
-    tbody.innerHTML='<tr><td colspan="12" class="empty">Error loading data</td></tr>';
+    tbody.innerHTML='<tr><td colspan="14" class="empty">Error loading data</td></tr>';
   }
 }
 
@@ -2396,6 +2418,179 @@ document.getElementById('addBtn').addEventListener('click',async()=>{
 loadList();
 </script>
 </body></html>`;
+
+// ─── Drop-off follow-up cron ────────────────────────────────────────────────
+
+const FOLLOWUP_HOUR_IST = 18; // 6 PM IST (Asia/Kolkata, UTC+5:30, no DST)
+const FOLLOWUP_MINUTE_IST = 0;
+const MAX_FOLLOWUPS_PER_DAY = 1000;
+
+const FOLLOWUP_STAGE_1 =
+  'Hey 👋\n\n' +
+  'Looks like we got started but didn’t finish building your resume yet.\n\n' +
+  'Don’t worry — creating a great resume with me takes less than 15 minutes.\n' +
+  'Most people delay making their resume because it feels like a lot of work… but that’s exactly why I’m here 🙂\n\n' +
+  'Just tell me a little more about your work, education or projects and I’ll handle the rest.\n\n' +
+  'You can type your answer or send a quick voice note — whatever is easier.\n\n' +
+  'Let’s finish your resume together 🚀';
+
+const FOLLOWUP_STAGE_3 =
+  'Hey! 👋\n\n' +
+  'You’ve already completed the payment — thank you! 🙌\n\n' +
+  'We just need a little more information from you to finish building your resume.\n\n' +
+  'It will take hardly 5 minutes.\n\n' +
+  'You can simply record one voice note and tell me about your experience, projects, achievements or skills — I’ll organize everything and turn it into a strong resume.\n\n' +
+  'Send it whenever you\'re ready and I’ll take care of the rest 💪\n\n' +
+  'Let’s finish your resume 🚀';
+
+function buildStage2Message(paymentLink) {
+  return (
+    'Hey again 👋\n\n' +
+    'I noticed you started creating your resume but haven’t completed the payment yet.\n\n' +
+    'It’s just ₹49 today — about the price of an evening snack ☕️\n' +
+    'But this small step could help you land your next job opportunity.\n\n' +
+    'Your resume is almost ready to be built.\n\n' +
+    'Complete the payment here and we’ll continue right away:\n\n' +
+    paymentLink + '\n\n' +
+    'Invest ₹49 in your career today — I promise the resume you get will be worth it 🚀'
+  );
+}
+
+async function runDropoffFollowups() {
+  const startedAt = new Date();
+  console.log('[FOLLOWUP CRON] Started at', startedAt.toISOString());
+
+  let candidates;
+  try {
+    candidates = await db.getDropoffCandidates(MAX_FOLLOWUPS_PER_DAY);
+  } catch (err) {
+    console.error('[FOLLOWUP CRON] Candidate query failed:', err);
+    return { started_at: startedAt, sent: 0, skipped: 0, errors: 1, error: err.message };
+  }
+
+  console.log('[FOLLOWUP CRON] Eligible candidates:', candidates.length);
+
+  let sent = 0;
+  let skipped = 0;
+  let errors = 0;
+  const stageCounts = { 1: 0, 2: 0, 3: 0 };
+
+  for (const c of candidates) {
+    if (sent >= MAX_FOLLOWUPS_PER_DAY) {
+      console.log('[FOLLOWUP CRON] Daily limit reached, stopping');
+      break;
+    }
+
+    // Atomic claim — guarantees one follow-up per user per 24h even with
+    // concurrent workers or manual triggers
+    let claimed;
+    try {
+      claimed = await db.markFollowupSent(c.user_id);
+    } catch (err) {
+      console.error('[FOLLOWUP CRON] Claim error for', c.phone_number, err.message);
+      errors += 1;
+      continue;
+    }
+    if (!claimed) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      let body;
+      let paymentLinkGenerated = false;
+
+      if (c.dropoff_stage === 1) {
+        body = FOLLOWUP_STAGE_1;
+      } else if (c.dropoff_stage === 2) {
+        if (!RAZORPAY_ENABLED) {
+          console.warn('[FOLLOWUP CRON] Razorpay disabled — skipping stage 2 for', c.phone_number);
+          skipped += 1;
+          continue;
+        }
+        const link = await createPaymentLink(c.phone_number, { id: c.request_id });
+        if (!link || link.startsWith('Could not') || link.startsWith('Payment is not')) {
+          console.error('[FOLLOWUP CRON] Payment link error for', c.phone_number, '→', link);
+          errors += 1;
+          continue;
+        }
+        body = buildStage2Message(link);
+        paymentLinkGenerated = true;
+      } else if (c.dropoff_stage === 3) {
+        body = FOLLOWUP_STAGE_3;
+      } else {
+        skipped += 1;
+        continue;
+      }
+
+      await sendWhatsApp(c.phone_number, body);
+
+      const logPayload = {
+        event: 'dropoff_followup_sent',
+        conversation_id: c.request_id,
+        phone_number: c.phone_number,
+        dropoff_stage: c.dropoff_stage,
+        timestamp: new Date().toISOString(),
+        payment_link_generated: paymentLinkGenerated,
+      };
+      try {
+        await db.addMessage(c.request_id, 'system', JSON.stringify(logPayload), 'dropoff_followup');
+      } catch (logErr) {
+        console.error('[FOLLOWUP CRON] Log error (non-fatal):', logErr.message);
+      }
+      console.log('[FOLLOWUP SENT]', logPayload);
+      sent += 1;
+      stageCounts[c.dropoff_stage] = (stageCounts[c.dropoff_stage] || 0) + 1;
+    } catch (err) {
+      console.error('[FOLLOWUP CRON] Send error for', c.phone_number, err);
+      errors += 1;
+    }
+  }
+
+  const summary = {
+    started_at: startedAt.toISOString(),
+    finished_at: new Date().toISOString(),
+    candidates: candidates.length,
+    sent,
+    skipped,
+    errors,
+    stage_counts: stageCounts,
+  };
+  console.log('[FOLLOWUP CRON] Completed:', summary);
+  return summary;
+}
+
+// Schedule fn to run daily at the given hour:minute IST wall-clock time.
+// Works regardless of server timezone because IST has a fixed offset (UTC+5:30, no DST).
+function scheduleDailyAtIST(hour, minute, fn) {
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const schedule = () => {
+    const nowMs = Date.now();
+    // Find the most recent IST-midnight (as a UTC instant).
+    const istMidnightUtcMs = Math.floor((nowMs + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS;
+    let nextMs = istMidnightUtcMs + (hour * 60 + minute) * 60 * 1000;
+    if (nextMs <= nowMs) nextMs += DAY_MS;
+    const delay = nextMs - nowMs;
+    const nextIso = new Date(nextMs).toISOString();
+    console.log('[CRON] Next drop-off run in', Math.round(delay / 1000 / 60), 'min at', nextIso, '(' + hour + ':' + String(minute).padStart(2, '0') + ' IST)');
+    setTimeout(async () => {
+      try { await fn(); } catch (err) { console.error('[CRON] handler error:', err); }
+      schedule();
+    }, delay);
+  };
+  schedule();
+}
+
+app.post('/admin/run-followups', requireAdminAuth, async (req, res) => {
+  try {
+    const summary = await runDropoffFollowups();
+    res.json({ success: true, summary });
+  } catch (err) {
+    console.error('ADMIN /run-followups error:', err);
+    res.status(500).json({ error: err.message || 'Run failed' });
+  }
+});
 
 // ─── LinkedIn Profile Discovery (testing tool) ─────────────────────────────
 
@@ -4033,6 +4228,10 @@ async function start() {
   server.on('error', (err) => {
     console.error('SERVER ERROR:', err);
   });
+
+  // Schedule daily drop-off follow-up cron at 18:00 IST (Asia/Kolkata)
+  scheduleDailyAtIST(FOLLOWUP_HOUR_IST, FOLLOWUP_MINUTE_IST, runDropoffFollowups);
+  console.log('[CRON] Drop-off follow-up scheduled daily at ' + FOLLOWUP_HOUR_IST + ':' + String(FOLLOWUP_MINUTE_IST).padStart(2, '0') + ' IST');
 }
 
 // ─── Global error handlers (prevent process crash) ──────────────────────────
