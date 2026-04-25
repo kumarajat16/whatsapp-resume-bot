@@ -149,6 +149,23 @@ async function initDb() {
   await addReqCol('docx_url', 'TEXT');
   await addReqCol('resume_file_summary', 'TEXT');
   await addReqCol('resume_file_full_text', 'TEXT');
+
+  // Generated resumes history (admin recovery + user-flow logging)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS generated_resumes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      conversation_id UUID NOT NULL,
+      phone_number TEXT NOT NULL,
+      resume_content JSONB,
+      pdf_url TEXT,
+      docx_url TEXT,
+      trigger_source TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours')
+    );
+    CREATE INDEX IF NOT EXISTS idx_generated_resumes_conversation ON generated_resumes(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_generated_resumes_phone ON generated_resumes(phone_number);
+  `);
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -443,6 +460,47 @@ async function getUserAdTracking(phoneNumber) {
   return result.rows[0] || null;
 }
 
+// ─── Generated resumes helpers ────────────────────────────────────────────
+
+async function createGeneratedResume({ conversationId, phoneNumber, resumeContent, pdfUrl, docxUrl, triggerSource }) {
+  const result = await pool.query(
+    `INSERT INTO generated_resumes
+       (conversation_id, phone_number, resume_content, pdf_url, docx_url, trigger_source)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+     RETURNING *`,
+    [
+      conversationId,
+      phoneNumber,
+      resumeContent ? JSON.stringify(resumeContent) : null,
+      pdfUrl || null,
+      docxUrl || null,
+      triggerSource,
+    ]
+  );
+  return result.rows[0];
+}
+
+async function getGeneratedResumeById(id) {
+  const result = await pool.query(
+    'SELECT * FROM generated_resumes WHERE id = $1',
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+async function getGeneratedResumesByConversation(conversationId) {
+  const result = await pool.query(
+    `SELECT id, conversation_id, phone_number, pdf_url, docx_url,
+            trigger_source, created_at, expires_at,
+            (expires_at <= NOW()) AS expired
+     FROM generated_resumes
+     WHERE conversation_id = $1
+     ORDER BY created_at DESC`,
+    [conversationId]
+  );
+  return result.rows;
+}
+
 module.exports = {
   pool,
   initDb,
@@ -472,4 +530,7 @@ module.exports = {
   getAdTracking,
   attachAdTrackingToUser,
   getUserAdTracking,
+  createGeneratedResume,
+  getGeneratedResumeById,
+  getGeneratedResumesByConversation,
 };

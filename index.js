@@ -1364,6 +1364,11 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         FROM payments p
         JOIN resume_requests rr ON p.resume_request_id = rr.id
         ORDER BY rr.user_id, p.created_at DESC
+      ),
+      generated_count AS (
+        SELECT conversation_id, COUNT(*)::int AS cnt
+        FROM generated_resumes
+        GROUP BY conversation_id
       )
       SELECT
         u.id AS user_id,
@@ -1374,11 +1379,14 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         COALESCE(ms.audio_count, 0)::int AS audio_count,
         COALESCE(ms.document_count, 0)::int AS document_count,
         lr.pdf_url,
+        lr.id AS latest_request_id,
+        COALESCE(gc.cnt, 0) AS generated_resume_count,
         COALESCE(pi.payment_status, 'none') AS payment_status
       FROM users u
       LEFT JOIN latest_request lr ON lr.user_id = u.id
       LEFT JOIN message_stats ms ON ms.user_id = u.id
       LEFT JOIN payment_info pi ON pi.user_id = u.id
+      LEFT JOIN generated_count gc ON gc.conversation_id = lr.id
     `;
 
     if (start_date) {
@@ -1439,6 +1447,153 @@ app.get('/admin/chat/:phone_number', requireAdminAuth, async (req, res) => {
   } catch (err) {
     console.error('ADMIN /chat error:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ─── Admin: generated resume management ─────────────────────────────────────
+
+async function generateResumeForAdmin(resumeRequestId) {
+  // Mirrors the data-prep half of processFullResume but never sends WhatsApp
+  // and never mutates resume_request status. Throws on fatal errors.
+  await extractAndSaveFromConversation(resumeRequestId);
+  const data = await db.getResumeData(resumeRequestId);
+
+  if (!data || !data.name) {
+    const messages = await db.getConversationMessages(resumeRequestId);
+    const resumeSummary = await db.getResumeSummary(resumeRequestId);
+    if ((!messages || messages.length === 0) && !resumeSummary && !data) {
+      throw new Error('No resume data found for this conversation.');
+    }
+    if (!data) {
+      throw new Error('Could not extract resume details for this conversation.');
+    }
+    if (!data.name) data.name = 'Your Name';
+  }
+
+  const [docxPath, pdfPath] = await Promise.all([
+    generateDocx(data),
+    generatePdf(data),
+  ]);
+
+  const docxToken = storeTempFile(docxPath, 'ResumeWala-Resume.docx');
+  const pdfToken = storeTempFile(pdfPath, 'ResumeWala-Resume.pdf');
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
+  const docxUrl = `${baseUrl}/resume/${docxToken}`;
+  const pdfUrl = `${baseUrl}/resume/${pdfToken}`;
+
+  // Look up phone number from the conversation's user
+  const phoneRow = await db.pool.query(
+    `SELECT u.phone_number FROM resume_requests rr
+     JOIN users u ON rr.user_id = u.id
+     WHERE rr.id = $1`,
+    [resumeRequestId]
+  );
+  const phoneNumber = phoneRow.rows[0]?.phone_number || '';
+
+  const record = await db.createGeneratedResume({
+    conversationId: resumeRequestId,
+    phoneNumber,
+    resumeContent: data,
+    pdfUrl,
+    docxUrl,
+    triggerSource: 'admin_dashboard',
+  });
+
+  await db.addMessage(resumeRequestId, 'system', 'admin_generated_resume', 'system');
+
+  return record;
+}
+
+app.post('/admin/generate-resume', requireAdminAuth, async (req, res) => {
+  try {
+    const conversationId = req.body?.conversation_id;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversation_id required' });
+    }
+    const record = await generateResumeForAdmin(conversationId);
+    res.json({
+      success: true,
+      resume: {
+        id: record.id,
+        pdf_url: record.pdf_url,
+        docx_url: record.docx_url,
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+        trigger_source: record.trigger_source,
+      },
+    });
+  } catch (err) {
+    console.error('ADMIN /generate-resume error:', err);
+    res.status(500).json({ error: err.message || 'Generation failed' });
+  }
+});
+
+app.get('/admin/resume-history', requireAdminAuth, async (req, res) => {
+  try {
+    const conversationId = req.query.conversation_id;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversation_id required' });
+    }
+    const rows = await db.getGeneratedResumesByConversation(conversationId);
+    res.json({ resumes: rows });
+  } catch (err) {
+    console.error('ADMIN /resume-history error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/admin/resume-content/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const row = await db.getGeneratedResumeById(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const expired = new Date(row.expires_at).getTime() <= Date.now();
+    res.json({
+      id: row.id,
+      pdf_url: row.pdf_url,
+      docx_url: row.docx_url,
+      trigger_source: row.trigger_source,
+      created_at: row.created_at,
+      expires_at: row.expires_at,
+      expired,
+      content: row.resume_content,
+    });
+  } catch (err) {
+    console.error('ADMIN /resume-content error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.post('/admin/send-resume', requireAdminAuth, async (req, res) => {
+  try {
+    const id = req.body?.id;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const row = await db.getGeneratedResumeById(id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const expired = new Date(row.expires_at).getTime() <= Date.now();
+    if (expired) {
+      return res.status(410).json({ error: 'This resume has expired' });
+    }
+    if (!row.phone_number || !row.pdf_url || !row.docx_url) {
+      return res.status(400).json({ error: 'Resume record is incomplete' });
+    }
+
+    const msg =
+      '✅ *Your resume is ready!*\n\n' +
+      'Here are your files (valid for 24 hours):\n\n' +
+      '📄 *PDF:*\n' + row.pdf_url + '\n\n' +
+      '📝 *Word:*\n' + row.docx_url + '\n\n' +
+      'Hope this helps you land something great 💪\n\nWant to create another one? Just say *hi*.';
+
+    await sendWhatsApp(row.phone_number, msg);
+    // Log the admin send event but do NOT change conversation state
+    try {
+      await db.addMessage(row.conversation_id, 'system', 'admin_sent_resume:' + row.id, 'system');
+    } catch (_) { /* best-effort logging */ }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('ADMIN /send-resume error:', err);
+    res.status(500).json({ error: 'Send failed' });
   }
 });
 
@@ -1527,9 +1682,38 @@ tr:hover{background:#fafbfc}
 .pay-none{color:#999}
 .pay-failed{color:#721c24}
 .empty{padding:40px;text-align:center;color:#888}
+.gen-btn{background:#0c63e4;color:white;border:none;padding:6px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap}
+.gen-btn:hover{background:#0a4fb8}
+.gen-btn:disabled{background:#9bb6dd;cursor:wait}
+.history-btn{background:#5b21b6;color:white;border:none;padding:6px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap;margin-left:6px}
+.history-btn:hover{background:#4a1a96}
+.send-btn{background:#25D366;color:white;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px}
+.send-btn:hover{background:#1da851}
+.send-btn:disabled{background:#a3d9b1;cursor:not-allowed}
+.preview-btn{background:#1F3864;color:white;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:4px}
+.preview-btn:hover{background:#2a4a7a}
+.expired-tag{display:inline-block;background:#f8d7da;color:#721c24;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600}
+.history-table{width:100%;border-collapse:collapse;font-size:13px}
+.history-table th{background:#f8f9fa;padding:8px;text-align:left;font-size:11px;text-transform:uppercase;color:#555;border-bottom:1px solid #eee}
+.history-table td{padding:8px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
+.trigger-tag{display:inline-block;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600}
+.trigger-user_whatsapp{background:#dcf8c6;color:#1b5e20}
+.trigger-admin_dashboard{background:#fce4ec;color:#880e4f}
+.toast{position:fixed;bottom:24px;right:24px;background:#1F3864;color:white;padding:12px 20px;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.2);font-size:14px;z-index:300;display:none}
+.toast.show{display:block}
+.toast.error{background:#c62828}
+.preview-pane{display:flex;flex-direction:column;height:100%}
+.preview-actions{padding:12px;background:#f0f2f5;display:flex;gap:8px;border-bottom:1px solid #ddd;flex-wrap:wrap;align-items:center}
+.preview-actions a.dl{background:#1F3864;color:white;text-decoration:none;padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600}
+.preview-actions a.dl:hover{background:#2a4a7a}
+.preview-actions .back{background:#eee;color:#333;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px}
+.preview-actions .back:hover{background:#ddd}
+.preview-frame{flex:1;width:100%;border:none;min-height:60vh;background:white}
+.expired-msg{padding:40px;text-align:center;color:#c62828;font-size:15px;font-weight:600}
 .overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
 .overlay.show{display:flex}
 .modal{background:white;border-radius:12px;width:100%;max-width:640px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden}
+.modal.wide{max-width:900px}
 .modal-header{padding:16px 20px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}
 .modal-header h2{font-size:16px;color:#1F3864}
 .modal-close{background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1}
@@ -1604,8 +1788,10 @@ tr:hover{background:#fafbfc}
 <th>Chat Depth</th>
 <th>Payment</th>
 <th>Resume</th>
+<th>Generate</th>
+<th>Resumes</th>
 </tr></thead>
-<tbody id="tbody"><tr><td colspan="10" class="loading">Loading...</td></tr></tbody>
+<tbody id="tbody"><tr><td colspan="12" class="loading">Loading...</td></tr></tbody>
 </table>
 </div>
 
@@ -1618,6 +1804,18 @@ tr:hover{background:#fafbfc}
 <div class="modal-body" id="modalBody"><div class="loading">Loading...</div></div>
 </div>
 </div>
+
+<div class="overlay" id="resumeOverlay">
+<div class="modal wide">
+<div class="modal-header">
+<h2 id="resumeModalTitle">Generated Resumes</h2>
+<button class="modal-close" id="resumeModalClose">&times;</button>
+</div>
+<div class="modal-body" id="resumeModalBody" style="background:white;padding:0"><div class="loading">Loading...</div></div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script>
 function fmtIST(ts){
@@ -1638,13 +1836,13 @@ async function loadData(){
   if(st)qs.set('state',st);
   if(cd)qs.set('chat_depth',cd);
   const tbody=document.getElementById('tbody');
-  tbody.innerHTML='<tr><td colspan="10" class="loading">Loading...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="12" class="loading">Loading...</td></tr>';
   try{
     const r=await fetch('/admin/conversations?'+qs.toString());
     if(r.status===401){window.location.reload();return;}
     const data=await r.json();
     if(!data.rows||data.rows.length===0){
-      tbody.innerHTML='<tr><td colspan="10" class="empty">No users found</td></tr>';
+      tbody.innerHTML='<tr><td colspan="12" class="empty">No users found</td></tr>';
       return;
     }
     tbody.innerHTML=data.rows.map(row=>{
@@ -1652,6 +1850,14 @@ async function loadData(){
       const ps=esc(row.payment_status||'none');
       const resumeCell=(row.state==='resume_generated'||row.state==='completed')&&row.pdf_url
         ?'<a href="'+esc(row.pdf_url)+'" target="_blank" rel="noopener" class="view-btn" style="text-decoration:none;display:inline-block">View Resume</a>'
+        :'<span style="color:#999;font-size:12px">—</span>';
+      const conv=row.latest_request_id?esc(row.latest_request_id):'';
+      const generateCell=conv
+        ?'<button class="gen-btn" data-conv="'+conv+'" data-phone="'+esc(row.phone_number)+'">Generate Resume</button>'
+        :'<span style="color:#999;font-size:12px">—</span>';
+      const cnt=row.generated_resume_count||0;
+      const historyCell=(conv&&cnt>0)
+        ?'<button class="history-btn" data-conv="'+conv+'" data-phone="'+esc(row.phone_number)+'">View Resumes ('+cnt+')</button>'
         :'<span style="color:#999;font-size:12px">—</span>';
       return '<tr>'+
         '<td>'+esc(String(row.user_id).slice(0,8))+'...</td>'+
@@ -1664,13 +1870,161 @@ async function loadData(){
         '<td class="count">'+row.chat_depth+'</td>'+
         '<td><span class="pay-'+ps+'">'+ps+'</span></td>'+
         '<td>'+resumeCell+'</td>'+
+        '<td>'+generateCell+'</td>'+
+        '<td>'+historyCell+'</td>'+
       '</tr>';
     }).join('');
     document.querySelectorAll('.view-btn').forEach(b=>{
-      b.addEventListener('click',()=>openChat(b.dataset.phone));
+      if(b.dataset.phone&&!b.dataset.bound){
+        b.dataset.bound='1';
+        b.addEventListener('click',()=>openChat(b.dataset.phone));
+      }
+    });
+    document.querySelectorAll('.gen-btn').forEach(b=>{
+      b.addEventListener('click',()=>generateForConv(b.dataset.conv,b.dataset.phone,b));
+    });
+    document.querySelectorAll('.history-btn').forEach(b=>{
+      b.addEventListener('click',()=>openResumeHistory(b.dataset.conv,b.dataset.phone));
     });
   }catch(e){
-    tbody.innerHTML='<tr><td colspan="10" class="empty">Error loading data</td></tr>';
+    tbody.innerHTML='<tr><td colspan="12" class="empty">Error loading data</td></tr>';
+  }
+}
+
+function showToast(msg,isErr){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.className='toast show'+(isErr?' error':'');
+  setTimeout(()=>{t.className='toast'+(isErr?' error':'');},3500);
+}
+
+async function generateForConv(conversationId,phone,btn){
+  if(!conversationId)return;
+  if(!confirm('Generate a new resume for '+phone+'? The user will NOT be notified.'))return;
+  const original=btn.textContent;
+  btn.disabled=true;
+  btn.textContent='Generating...';
+  try{
+    const r=await fetch('/admin/generate-resume',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({conversation_id:conversationId}),
+    });
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!r.ok){
+      showToast(data.error||'Generation failed',true);
+    }else{
+      showToast('Resume generated successfully');
+      loadData();
+    }
+  }catch(e){
+    showToast('Network error',true);
+  }finally{
+    btn.disabled=false;
+    btn.textContent=original;
+  }
+}
+
+async function openResumeHistory(conversationId,phone){
+  document.getElementById('resumeModalTitle').textContent='Generated Resumes — '+phone;
+  document.getElementById('resumeOverlay').classList.add('show');
+  const body=document.getElementById('resumeModalBody');
+  body.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const r=await fetch('/admin/resume-history?conversation_id='+encodeURIComponent(conversationId));
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!data.resumes||data.resumes.length===0){
+      body.innerHTML='<div class="empty">No generated resumes yet</div>';
+      return;
+    }
+    const rows=data.resumes.map(rs=>{
+      const expired=!!rs.expired;
+      const trig=esc(rs.trigger_source||'');
+      const previewBtn=expired
+        ?'<span class="expired-tag">Expired</span>'
+        :'<button class="preview-btn" data-id="'+esc(rs.id)+'">View</button>';
+      const sendBtn=expired
+        ?'<button class="send-btn" disabled>Send</button>'
+        :'<button class="send-btn" data-id="'+esc(rs.id)+'" data-phone="'+esc(rs.phone_number)+'">Send Resume</button>';
+      return '<tr>'+
+        '<td>'+fmtIST(rs.created_at)+'</td>'+
+        '<td><span class="trigger-tag trigger-'+trig+'">'+trig+'</span></td>'+
+        '<td>'+previewBtn+'</td>'+
+        '<td>'+sendBtn+'</td>'+
+      '</tr>';
+    }).join('');
+    body.innerHTML='<div style="padding:16px"><table class="history-table">'+
+      '<thead><tr><th>Created (IST)</th><th>Trigger Source</th><th>View</th><th>Send Resume</th></tr></thead>'+
+      '<tbody>'+rows+'</tbody></table></div>';
+    body.querySelectorAll('.preview-btn').forEach(b=>{
+      b.addEventListener('click',()=>openResumePreview(b.dataset.id,conversationId,phone));
+    });
+    body.querySelectorAll('.send-btn:not([disabled])').forEach(b=>{
+      b.addEventListener('click',()=>sendResume(b.dataset.id,b.dataset.phone,b));
+    });
+  }catch(e){
+    body.innerHTML='<div class="empty">Error loading resumes</div>';
+  }
+}
+
+async function openResumePreview(id,conversationId,phone){
+  const body=document.getElementById('resumeModalBody');
+  body.innerHTML='<div class="loading">Loading preview...</div>';
+  try{
+    const r=await fetch('/admin/resume-content/'+encodeURIComponent(id));
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!r.ok){
+      body.innerHTML='<div class="empty">Could not load preview</div>';
+      return;
+    }
+    if(data.expired){
+      body.innerHTML='<div class="preview-pane">'+
+        '<div class="preview-actions"><button class="back" id="backToHistory">&larr; Back</button></div>'+
+        '<div class="expired-msg">This resume has expired.</div></div>';
+    }else{
+      body.innerHTML='<div class="preview-pane">'+
+        '<div class="preview-actions">'+
+          '<button class="back" id="backToHistory">&larr; Back</button>'+
+          '<a class="dl" href="'+esc(data.pdf_url)+'" target="_blank" rel="noopener">Download PDF</a>'+
+          '<a class="dl" href="'+esc(data.docx_url)+'" target="_blank" rel="noopener">Download Word</a>'+
+        '</div>'+
+        '<iframe class="preview-frame" src="'+esc(data.pdf_url)+'"></iframe>'+
+      '</div>';
+    }
+    document.getElementById('backToHistory').addEventListener('click',()=>openResumeHistory(conversationId,phone));
+  }catch(e){
+    body.innerHTML='<div class="empty">Error loading preview</div>';
+  }
+}
+
+async function sendResume(id,phone,btn){
+  if(!confirm('Send this resume via WhatsApp to '+phone+'?'))return;
+  const original=btn.textContent;
+  btn.disabled=true;
+  btn.textContent='Sending...';
+  try{
+    const r=await fetch('/admin/send-resume',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:id}),
+    });
+    if(r.status===401){window.location.reload();return;}
+    const data=await r.json();
+    if(!r.ok){
+      showToast(data.error||'Send failed',true);
+      btn.disabled=false;
+      btn.textContent=original;
+    }else{
+      showToast('Resume sent to '+phone);
+      btn.textContent='Sent ✓';
+    }
+  }catch(e){
+    showToast('Network error',true);
+    btn.disabled=false;
+    btn.textContent=original;
   }
 }
 
@@ -1717,6 +2071,12 @@ document.getElementById('modalClose').addEventListener('click',()=>{
 });
 document.getElementById('overlay').addEventListener('click',e=>{
   if(e.target.id==='overlay')document.getElementById('overlay').classList.remove('show');
+});
+document.getElementById('resumeModalClose').addEventListener('click',()=>{
+  document.getElementById('resumeOverlay').classList.remove('show');
+});
+document.getElementById('resumeOverlay').addEventListener('click',e=>{
+  if(e.target.id==='resumeOverlay')document.getElementById('resumeOverlay').classList.remove('show');
 });
 document.getElementById('logoutBtn').addEventListener('click',async()=>{
   await fetch('/admin/logout',{method:'POST'});
@@ -2440,6 +2800,20 @@ async function processFullResume(from, resumeRequestId) {
   // Store resume URLs in database
   await db.saveResumeUrls(resumeRequestId, pdfUrl, docxUrl);
   await db.addMessage(resumeRequestId, 'system', 'resume_generated', 'system');
+
+  // Log into generated_resumes history (admin recovery + multi-version tracking)
+  try {
+    await db.createGeneratedResume({
+      conversationId: resumeRequestId,
+      phoneNumber: from,
+      resumeContent: data,
+      pdfUrl,
+      docxUrl,
+      triggerSource: 'user_whatsapp',
+    });
+  } catch (err) {
+    console.error('[generated_resumes] log error (non-fatal):', err.message);
+  }
 
   await db.updateResumeRequestStatus(resumeRequestId, 'resume_generated');
   console.log('Resume generation completed');
