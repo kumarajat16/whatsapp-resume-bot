@@ -166,6 +166,23 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_generated_resumes_conversation ON generated_resumes(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_generated_resumes_phone ON generated_resumes(phone_number);
   `);
+
+  // WhatsApp template configuration (editable from admin UI)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS whatsapp_templates (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      template_key TEXT UNIQUE NOT NULL,
+      template_name TEXT NOT NULL,
+      language_code TEXT NOT NULL DEFAULT 'en',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  await pool.query(
+    `INSERT INTO whatsapp_templates (template_key, template_name, language_code)
+     VALUES ('resume_delivery', 'final_resume_links_post_payment', 'en')
+     ON CONFLICT (template_key) DO NOTHING`
+  );
 }
 
 // ─── User helpers ──────────────────────────────────────────────────────────
@@ -501,6 +518,69 @@ async function getGeneratedResumesByConversation(conversationId) {
   return result.rows;
 }
 
+// ─── 24-hour window check ────────────────────────────────────────────────
+
+async function getLastIncomingMessageTime(phoneNumber) {
+  // Last user-incoming message for this phone, regardless of resume_request.
+  // The WhatsApp 24h customer service window is at the phone-number level.
+  const result = await pool.query(
+    `SELECT MAX(m.created_at) AS last_at
+     FROM messages m
+     JOIN resume_requests rr ON m.resume_request_id = rr.id
+     JOIN users u ON rr.user_id = u.id
+     WHERE u.phone_number = $1 AND m.direction = 'incoming'`,
+    [phoneNumber]
+  );
+  return result.rows[0]?.last_at || null;
+}
+
+// ─── WhatsApp template config helpers ────────────────────────────────────
+
+async function listTemplates() {
+  const result = await pool.query(
+    'SELECT id, template_key, template_name, language_code, created_at, updated_at FROM whatsapp_templates ORDER BY template_key ASC'
+  );
+  return result.rows;
+}
+
+async function getTemplateByKey(templateKey) {
+  const result = await pool.query(
+    'SELECT id, template_key, template_name, language_code FROM whatsapp_templates WHERE template_key = $1',
+    [templateKey]
+  );
+  return result.rows[0] || null;
+}
+
+async function createTemplate({ templateKey, templateName, languageCode }) {
+  const result = await pool.query(
+    `INSERT INTO whatsapp_templates (template_key, template_name, language_code)
+     VALUES ($1, $2, $3) RETURNING *`,
+    [templateKey, templateName, languageCode || 'en']
+  );
+  return result.rows[0];
+}
+
+async function updateTemplate(id, { templateName, languageCode }) {
+  const result = await pool.query(
+    `UPDATE whatsapp_templates
+     SET template_name = COALESCE($2, template_name),
+         language_code = COALESCE($3, language_code),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [id, templateName || null, languageCode || null]
+  );
+  return result.rows[0] || null;
+}
+
+async function deleteTemplate(id) {
+  const result = await pool.query(
+    'DELETE FROM whatsapp_templates WHERE id = $1 RETURNING id',
+    [id]
+  );
+  return result.rowCount > 0;
+}
+
 module.exports = {
   pool,
   initDb,
@@ -533,4 +613,10 @@ module.exports = {
   createGeneratedResume,
   getGeneratedResumeById,
   getGeneratedResumesByConversation,
+  getLastIncomingMessageTime,
+  listTemplates,
+  getTemplateByKey,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
 };

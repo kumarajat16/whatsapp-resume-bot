@@ -113,6 +113,38 @@ async function sendWhatsApp(to, body) {
   }
 }
 
+async function sendWhatsAppTemplate(to, templateName, languageCode, bodyParams) {
+  console.log('[OUT TPL]', to, '|', templateName, '|', languageCode);
+  const res = await fetch(WA_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode || 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: (bodyParams || []).map(t => ({ type: 'text', text: String(t) })),
+          },
+        ],
+      },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[WA TPL ERROR]', res.status, err);
+    return { ok: false, status: res.status, error: err };
+  }
+  return { ok: true };
+}
+
 // ─── WhatsApp media upload + document send ───────────────────────────────────
 
 const WA_MEDIA_URL = `https://graph.facebook.com/v22.0/${process.env.WA_PHONE_NUMBER_ID}/media`;
@@ -1571,29 +1603,143 @@ app.post('/admin/send-resume', requireAdminAuth, async (req, res) => {
     if (!row) return res.status(404).json({ error: 'Not found' });
     const expired = new Date(row.expires_at).getTime() <= Date.now();
     if (expired) {
-      return res.status(410).json({ error: 'This resume has expired' });
+      return res.status(410).json({
+        error: 'This resume has expired and cannot be sent. Please regenerate a new resume.',
+      });
     }
     if (!row.phone_number || !row.pdf_url || !row.docx_url) {
       return res.status(400).json({ error: 'Resume record is incomplete' });
     }
 
-    const msg =
-      '✅ *Your resume is ready!*\n\n' +
-      'Here are your files (valid for 24 hours):\n\n' +
-      '📄 *PDF:*\n' + row.pdf_url + '\n\n' +
-      '📝 *Word:*\n' + row.docx_url + '\n\n' +
-      'Hope this helps you land something great 💪\n\nWant to create another one? Just say *hi*.';
+    // Decide free-form text vs. template based on the WhatsApp 24h window
+    const lastUserMsgAt = await db.getLastIncomingMessageTime(row.phone_number);
+    const withinWindow = lastUserMsgAt
+      && (Date.now() - new Date(lastUserMsgAt).getTime()) < 24 * 60 * 60 * 1000;
 
-    await sendWhatsApp(row.phone_number, msg);
-    // Log the admin send event but do NOT change conversation state
+    let messageType;
+    let templateNameUsed = null;
+
+    if (withinWindow) {
+      messageType = 'text';
+      const body =
+        'Your resume is ready!\n\n' +
+        'Download your files here (valid for 24 hours):\n\n' +
+        'PDF:\n' + row.pdf_url + '\n\n' +
+        'Word:\n' + row.docx_url + '\n\n' +
+        "If you'd like to create another resume, just reply Hi.";
+      await sendWhatsApp(row.phone_number, body);
+    } else {
+      messageType = 'template';
+      const tpl = await db.getTemplateByKey('resume_delivery');
+      if (!tpl) {
+        return res.status(500).json({
+          error: 'Template config missing for key "resume_delivery". Configure one under Settings → Templates.',
+        });
+      }
+      templateNameUsed = tpl.template_name;
+      const sendResult = await sendWhatsAppTemplate(
+        row.phone_number,
+        tpl.template_name,
+        tpl.language_code,
+        [row.pdf_url, row.docx_url]
+      );
+      if (!sendResult.ok) {
+        return res.status(502).json({
+          error: 'Template send failed. Check that template "' + tpl.template_name +
+            '" is approved for language "' + tpl.language_code + '" with 2 body variables.',
+          details: sendResult.error,
+        });
+      }
+    }
+
+    // Structured admin send-event log. Does NOT change conversation state.
+    const logPayload = {
+      event: 'resume_sent_from_admin',
+      conversation_id: row.conversation_id,
+      phone_number: row.phone_number,
+      resume_id: row.id,
+      message_type: messageType,
+      template_name: templateNameUsed,
+      timestamp: new Date().toISOString(),
+    };
     try {
-      await db.addMessage(row.conversation_id, 'system', 'admin_sent_resume:' + row.id, 'system');
+      await db.addMessage(
+        row.conversation_id,
+        'system',
+        JSON.stringify(logPayload),
+        'admin_send_event'
+      );
     } catch (_) { /* best-effort logging */ }
+    console.log('[ADMIN SEND]', logPayload);
 
-    res.json({ success: true });
+    res.json({ success: true, message_type: messageType, template_name: templateNameUsed });
   } catch (err) {
     console.error('ADMIN /send-resume error:', err);
     res.status(500).json({ error: 'Send failed' });
+  }
+});
+
+// ─── Admin: WhatsApp template configuration ─────────────────────────────────
+
+app.get('/admin/templates', (req, res) => {
+  if (!isAdminAuthed(req)) return res.send(ADMIN_LOGIN_HTML);
+  res.send(ADMIN_TEMPLATES_HTML);
+});
+
+app.get('/admin/templates/list', requireAdminAuth, async (req, res) => {
+  try {
+    const rows = await db.listTemplates();
+    res.json({ templates: rows });
+  } catch (err) {
+    console.error('ADMIN /templates/list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.post('/admin/templates', requireAdminAuth, async (req, res) => {
+  try {
+    const { template_key, template_name, language_code } = req.body || {};
+    if (!template_key || !template_name) {
+      return res.status(400).json({ error: 'template_key and template_name required' });
+    }
+    const row = await db.createTemplate({
+      templateKey: String(template_key).trim(),
+      templateName: String(template_name).trim(),
+      languageCode: String(language_code || 'en').trim(),
+    });
+    res.json({ success: true, template: row });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Template key already exists' });
+    }
+    console.error('ADMIN /templates create error:', err);
+    res.status(500).json({ error: 'Create failed' });
+  }
+});
+
+app.patch('/admin/templates/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const { template_name, language_code } = req.body || {};
+    const row = await db.updateTemplate(req.params.id, {
+      templateName: template_name ? String(template_name).trim() : null,
+      languageCode: language_code ? String(language_code).trim() : null,
+    });
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true, template: row });
+  } catch (err) {
+    console.error('ADMIN /templates update error:', err);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+app.delete('/admin/templates/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const ok = await db.deleteTemplate(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('ADMIN /templates delete error:', err);
+    res.status(500).json({ error: 'Delete failed' });
   }
 });
 
@@ -1730,7 +1876,10 @@ tr:hover{background:#fafbfc}
 <body>
 <div class="header">
 <h1>Admin Dashboard</h1>
+<div style="display:flex;gap:8px;align-items:center">
+<a href="/admin/templates" class="logout" style="text-decoration:none;display:inline-block">Settings · Templates</a>
 <button class="logout" id="logoutBtn">Logout</button>
+</div>
 </div>
 
 <div class="filters">
@@ -2084,6 +2233,167 @@ document.getElementById('logoutBtn').addEventListener('click',async()=>{
 });
 
 loadData();
+</script>
+</body></html>`;
+
+const ADMIN_TEMPLATES_HTML = `<!DOCTYPE html><html><head><title>Templates - ResumeWala Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#f0f2f5;color:#222;padding:20px}
+h1{color:#1F3864;font-size:24px;margin-bottom:6px}
+.crumbs{font-size:13px;color:#666;margin-bottom:16px}
+.crumbs a{color:#1F3864;text-decoration:none}
+.crumbs a:hover{text-decoration:underline}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.btn{background:#1F3864;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;text-decoration:none;display:inline-block}
+.btn:hover{background:#2a4a7a}
+.btn.muted{background:#eee;color:#333}
+.btn.muted:hover{background:#ddd}
+.btn.danger{background:#c62828}
+.btn.danger:hover{background:#a01d1d}
+.btn.green{background:#2e7d32}
+.btn.green:hover{background:#1b5e20}
+.card{background:white;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);padding:16px;margin-bottom:16px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;font-size:13px;border-bottom:1px solid #eee;vertical-align:middle}
+th{background:#f8f9fa;color:#555;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.3px}
+tr:hover{background:#fafbfc}
+.empty{padding:30px;text-align:center;color:#888}
+.loading{padding:30px;text-align:center;color:#888}
+.toolbar{display:flex;gap:8px;margin-bottom:12px}
+.form-row{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:8px}
+.form-row .field{display:flex;flex-direction:column;gap:4px;flex:1;min-width:160px}
+.form-row label{font-size:12px;color:#666;font-weight:600}
+.form-row input{padding:8px;border:1px solid #ddd;border-radius:6px;font-size:14px}
+.toast{position:fixed;bottom:24px;right:24px;background:#1F3864;color:white;padding:12px 20px;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.2);font-size:14px;z-index:300;display:none}
+.toast.show{display:block}
+.toast.error{background:#c62828}
+.key-badge{display:inline-block;background:#e7f3ff;color:#0c63e4;padding:3px 8px;border-radius:4px;font-family:Menlo,Consolas,monospace;font-size:12px;font-weight:600}
+.row-edit input{padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;width:100%}
+.note{font-size:12px;color:#666;margin-top:8px;line-height:1.5}
+</style></head>
+<body>
+<div class="crumbs"><a href="/admin">&larr; Admin Dashboard</a> &middot; Settings &middot; Templates</div>
+<div class="header"><h1>WhatsApp Templates</h1></div>
+
+<div class="card">
+<h3 style="font-size:14px;color:#1F3864;margin-bottom:8px">Add Template</h3>
+<div class="form-row">
+<div class="field"><label>Template Key</label><input id="newKey" placeholder="e.g. resume_delivery"></div>
+<div class="field"><label>Template Name</label><input id="newName" placeholder="e.g. final_resume_links_post_payment"></div>
+<div class="field" style="max-width:120px"><label>Language</label><input id="newLang" placeholder="en" value="en"></div>
+<div class="field" style="flex:0"><label>&nbsp;</label><button class="btn green" id="addBtn">Add</button></div>
+</div>
+<div class="note">The system uses <span class="key-badge">resume_delivery</span> as the lookup key when sending resumes outside the 24-hour window. Editing the template name swaps the live template without redeploying.</div>
+</div>
+
+<div class="card">
+<table id="tbl">
+<thead><tr><th>Template Key</th><th>Template Name</th><th>Language</th><th style="width:200px;text-align:right">Actions</th></tr></thead>
+<tbody id="tbody"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function showToast(msg,isErr){const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(isErr?' error':'');setTimeout(()=>{t.className='toast'+(isErr?' error':'');},3500);}
+
+async function loadList(){
+  const tbody=document.getElementById('tbody');
+  tbody.innerHTML='<tr><td colspan="4" class="loading">Loading...</td></tr>';
+  try{
+    const r=await fetch('/admin/templates/list');
+    if(r.status===401){window.location.href='/admin';return;}
+    const data=await r.json();
+    if(!data.templates||data.templates.length===0){
+      tbody.innerHTML='<tr><td colspan="4" class="empty">No templates configured</td></tr>';
+      return;
+    }
+    tbody.innerHTML=data.templates.map(t=>(
+      '<tr data-id="'+esc(t.id)+'">'+
+        '<td><span class="key-badge">'+esc(t.template_key)+'</span></td>'+
+        '<td class="cell-name">'+esc(t.template_name)+'</td>'+
+        '<td class="cell-lang">'+esc(t.language_code)+'</td>'+
+        '<td style="text-align:right">'+
+          '<button class="btn muted edit-btn">Edit</button> '+
+          '<button class="btn danger del-btn">Delete</button>'+
+        '</td>'+
+      '</tr>'
+    )).join('');
+    document.querySelectorAll('.edit-btn').forEach(b=>b.addEventListener('click',e=>startEdit(e.target.closest('tr'))));
+    document.querySelectorAll('.del-btn').forEach(b=>b.addEventListener('click',e=>doDelete(e.target.closest('tr'))));
+  }catch(e){
+    tbody.innerHTML='<tr><td colspan="4" class="empty">Error loading templates</td></tr>';
+  }
+}
+
+function startEdit(tr){
+  const id=tr.dataset.id;
+  const nameCell=tr.querySelector('.cell-name');
+  const langCell=tr.querySelector('.cell-lang');
+  const currentName=nameCell.textContent;
+  const currentLang=langCell.textContent;
+  nameCell.innerHTML='<div class="row-edit"><input class="ed-name" value="'+esc(currentName)+'"></div>';
+  langCell.innerHTML='<div class="row-edit"><input class="ed-lang" value="'+esc(currentLang)+'" style="max-width:80px"></div>';
+  const actions=tr.querySelector('td:last-child');
+  actions.innerHTML='<button class="btn green save-btn">Save</button> <button class="btn muted cancel-btn">Cancel</button>';
+  actions.querySelector('.save-btn').addEventListener('click',async()=>{
+    const newName=tr.querySelector('.ed-name').value.trim();
+    const newLang=tr.querySelector('.ed-lang').value.trim();
+    if(!newName||!newLang){showToast('Name and language required',true);return;}
+    try{
+      const r=await fetch('/admin/templates/'+encodeURIComponent(id),{
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({template_name:newName,language_code:newLang}),
+      });
+      const data=await r.json();
+      if(!r.ok){showToast(data.error||'Update failed',true);return;}
+      showToast('Template updated');
+      loadList();
+    }catch(e){showToast('Network error',true);}
+  });
+  actions.querySelector('.cancel-btn').addEventListener('click',loadList);
+}
+
+async function doDelete(tr){
+  const id=tr.dataset.id;
+  const key=tr.querySelector('.key-badge').textContent;
+  if(!confirm('Delete template "'+key+'"? This cannot be undone.'))return;
+  try{
+    const r=await fetch('/admin/templates/'+encodeURIComponent(id),{method:'DELETE'});
+    const data=await r.json();
+    if(!r.ok){showToast(data.error||'Delete failed',true);return;}
+    showToast('Template deleted');
+    loadList();
+  }catch(e){showToast('Network error',true);}
+}
+
+document.getElementById('addBtn').addEventListener('click',async()=>{
+  const key=document.getElementById('newKey').value.trim();
+  const name=document.getElementById('newName').value.trim();
+  const lang=document.getElementById('newLang').value.trim()||'en';
+  if(!key||!name){showToast('Key and name required',true);return;}
+  try{
+    const r=await fetch('/admin/templates',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({template_key:key,template_name:name,language_code:lang}),
+    });
+    const data=await r.json();
+    if(!r.ok){showToast(data.error||'Add failed',true);return;}
+    document.getElementById('newKey').value='';
+    document.getElementById('newName').value='';
+    document.getElementById('newLang').value='en';
+    showToast('Template added');
+    loadList();
+  }catch(e){showToast('Network error',true);}
+});
+
+loadList();
 </script>
 </body></html>`;
 
