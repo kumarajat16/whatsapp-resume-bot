@@ -10,6 +10,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const db = require('./db');
+const referral = require('./referral-system');
 
 const app = express();
 app.use(express.json());
@@ -951,6 +952,19 @@ async function handleIncomingMessage(from, incomingMsg) {
       incomingMsg = incomingMsg.replace(/\n*Ref:\s*[A-Z0-9]{4,8}/i, '').trim();
     }
 
+    // Extract Referral ID: rwxxxxxxx from message (separate from ad tracking Ref:)
+    const referralMatch = incomingMsg.match(/Referral ID:\s*(rw[a-z0-9]{7})/i);
+    if (referralMatch) {
+      const refId = referralMatch[1].toLowerCase();
+      try {
+        const ok = await referral.attributeReferral(from, refId);
+        if (ok) console.log('[REFERRAL] Attributed', refId, 'to', from);
+      } catch (err) {
+        console.error('[REFERRAL] attribute error:', err);
+      }
+      incomingMsg = incomingMsg.replace(/\n*Referral ID:\s*rw[a-z0-9]{7}/i, '').trim();
+    }
+
     const reply = await handleMessage(from, user, incomingMsg);
 
     // Split long messages into chunks for WhatsApp readability
@@ -1147,8 +1161,10 @@ function generateShortId() {
 app.get('/start', async (req, res) => {
   // Safely read params — never throw
   const fbclid = (req.query.fbclid && typeof req.query.fbclid === 'string') ? req.query.fbclid : '';
+  const refParam = (req.query.ref && typeof req.query.ref === 'string') ? req.query.ref.trim().toLowerCase() : '';
   let shortId = '';
   let safeFbclid = '';
+  let validReferralId = '';
 
   // Try to create tracking, but never block page render
   try {
@@ -1164,9 +1180,22 @@ app.get('/start', async (req, res) => {
     safeFbclid = '';
   }
 
-  const waMessage = shortId
-    ? 'Hi ResumeWala, I want to create my professional resume.\n\nRef: ' + shortId
-    : 'Hi ResumeWala, I want to create my professional resume.';
+  // Validate referral id — never block page render
+  try {
+    if (/^rw[a-z0-9]{7}$/.test(refParam)) {
+      const ok = await referral.validateReferralId(refParam);
+      if (ok) {
+        validReferralId = refParam;
+        console.log('[REFERRAL] Valid referral on /start:', refParam);
+      }
+    }
+  } catch (err) {
+    console.error('[REFERRAL] /start validate error (non-fatal):', err.message);
+  }
+
+  let waMessage = 'Hi ResumeWala, I want to create my professional resume.';
+  if (validReferralId) waMessage += '\n\nReferral ID: ' + validReferralId;
+  if (shortId) waMessage += '\n\nRef: ' + shortId;
   const waUrl = 'https://wa.me/919217232103?text=' + encodeURIComponent(waMessage);
 
   const pageViewCall = safeFbclid
@@ -3028,6 +3057,14 @@ if (RAZORPAY_ENABLED) {
         await db.updateResumeRequestStatus(resumeRequestId, 'payment_completed');
         await db.addMessage(resumeRequestId, 'system', 'payment_completed', 'system');
         console.log('Payment verified:', paymentId);
+
+        // Record referral conversion (if this user was referred). Best-effort.
+        try {
+          const conv = await referral.recordConversion(phone, resumeRequestId);
+          if (conv) console.log('[REFERRAL] Conversion recorded:', phone, '->', conv.referral_id);
+        } catch (err) {
+          console.error('[REFERRAL] conversion error (non-fatal):', err);
+        }
 
         // Message 1: Payment confirmation (sent immediately)
         await sendWhatsApp(phone, 'Awesome! Payment received 🎉\n\nLet\'s get back to building your resume.').catch(console.error);

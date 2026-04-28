@@ -19,8 +19,11 @@ function normalizePhone(input) {
   return '+91' + digits;
 }
 
+let _pool = null;
+
 function mount(app, dbModule) {
   const pool = dbModule.pool;
+  _pool = pool;
   const router = express.Router();
 
   // Initialize tables on boot (idempotent)
@@ -98,4 +101,34 @@ function mount(app, dbModule) {
   console.log('[REFERRAL] Module mounted at /referral');
 }
 
-module.exports = { mount };
+async function validateReferralId(referralId) {
+  if (!_pool) return false;
+  try {
+    return await refDb.validateReferralId(_pool, referralId);
+  } catch (err) {
+    console.error('[REFERRAL] validateReferralId error:', err);
+    return false;
+  }
+}
+
+async function attributeReferral(phoneNumber, referralId) {
+  if (!_pool) return false;
+  try {
+    return await refDb.attributeReferral(_pool, phoneNumber, referralId);
+  } catch (err) {
+    console.error('[REFERRAL] attributeReferral error:', err);
+    return false;
+  }
+}
+
+async function recordConversion(phoneNumber, resumeRequestId) {
+  if (!_pool) return null;
+  try {
+    return await refDb.recordConversion(_pool, phoneNumber, resumeRequestId);
+  } catch (err) {
+    console.error('[REFERRAL] recordConversion error:', err);
+    return null;
+  }
+}
+
+module.exports = { mount, validateReferralId, attributeReferral, recordConversion };

@@ -19,6 +19,21 @@ async function init(pool) {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_referral_txn_referral_id ON referral_transactions(referral_id)`);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_referral_txn_resume
+    ON referral_transactions(resume_transaction_id)
+    WHERE resume_transaction_id IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS referral_attributions (
+      phone_number VARCHAR(20) PRIMARY KEY,
+      referral_id VARCHAR(20) NOT NULL,
+      attributed_at TIMESTAMPTZ DEFAULT NOW(),
+      resume_request_id VARCHAR(64),
+      converted_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_referral_attr_referral_id ON referral_attributions(referral_id)`);
 }
 
 async function findOrCreateReferralUser(pool, phone, name) {
@@ -70,9 +85,50 @@ async function recordReferralTransaction(pool, referralId, resumeTxnId) {
   );
 }
 
+async function validateReferralId(pool, referralId) {
+  const r = await pool.query('SELECT 1 FROM referral_users WHERE referral_id = $1', [referralId]);
+  return !!r.rows[0];
+}
+
+async function attributeReferral(pool, phoneNumber, referralId) {
+  const ok = await pool.query('SELECT 1 FROM referral_users WHERE referral_id = $1', [referralId]);
+  if (!ok.rows[0]) return false;
+  await pool.query(
+    `INSERT INTO referral_attributions (phone_number, referral_id) VALUES ($1, $2)
+     ON CONFLICT (phone_number) DO NOTHING`,
+    [phoneNumber, referralId]
+  );
+  return true;
+}
+
+async function recordConversion(pool, phoneNumber, resumeRequestId) {
+  const r = await pool.query(
+    `UPDATE referral_attributions
+     SET converted_at = NOW(), resume_request_id = $2
+     WHERE phone_number = $1 AND converted_at IS NULL
+     RETURNING referral_id`,
+    [phoneNumber, resumeRequestId]
+  );
+  if (!r.rows[0]) return null;
+  const referralId = r.rows[0].referral_id;
+  try {
+    await pool.query(
+      `INSERT INTO referral_transactions (referral_id, resume_transaction_id) VALUES ($1, $2)
+       ON CONFLICT (resume_transaction_id) DO NOTHING`,
+      [referralId, resumeRequestId]
+    );
+  } catch (err) {
+    console.error('[REFERRAL] insert txn error:', err);
+  }
+  return { referral_id: referralId };
+}
+
 module.exports = {
   init,
   findOrCreateReferralUser,
   getReferralStats,
   recordReferralTransaction,
+  validateReferralId,
+  attributeReferral,
+  recordConversion,
 };
