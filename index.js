@@ -1790,6 +1790,53 @@ app.delete('/admin/templates/:id', requireAdminAuth, async (req, res) => {
   }
 });
 
+// ─── Admin: Referral tracking ───────────────────────────────────────────────
+
+app.get('/admin/referrals', (req, res) => {
+  if (!isAdminAuthed(req)) return res.send(ADMIN_LOGIN_HTML);
+  res.send(ADMIN_REFERRALS_HTML);
+});
+
+app.get('/admin/referrals/list', requireAdminAuth, async (req, res) => {
+  try {
+    const data = await referral.adminListReferralUsers({
+      search: req.query.search,
+      sortBy: req.query.sort_by,
+      sortDir: req.query.sort_dir,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json(data);
+  } catch (err) {
+    console.error('ADMIN /referrals/list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/admin/referrals/:referralId/tagged-users', requireAdminAuth, async (req, res) => {
+  try {
+    const refId = String(req.params.referralId || '').toLowerCase();
+    if (!/^rw[a-z0-9]{7}$/.test(refId)) return res.status(400).json({ error: 'Invalid referral id' });
+    const rows = await referral.adminGetTaggedUsers(refId);
+    res.json({ referral_id: refId, rows });
+  } catch (err) {
+    console.error('ADMIN /referrals/:id/tagged-users error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.get('/admin/referrals/:referralId/transactions', requireAdminAuth, async (req, res) => {
+  try {
+    const refId = String(req.params.referralId || '').toLowerCase();
+    if (!/^rw[a-z0-9]{7}$/.test(refId)) return res.status(400).json({ error: 'Invalid referral id' });
+    const rows = await referral.adminGetTransactions(refId);
+    res.json({ referral_id: refId, rows });
+  } catch (err) {
+    console.error('ADMIN /referrals/:id/transactions error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 const ADMIN_LOGIN_HTML = `<!DOCTYPE html><html><head><title>Admin Login - ResumeWala</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -1928,7 +1975,13 @@ tr:hover{background:#fafbfc}
 <div class="header">
 <h1>Admin Dashboard</h1>
 <div style="display:flex;gap:8px;align-items:center">
-<a href="/admin/templates" class="logout" style="text-decoration:none;display:inline-block">Settings · Templates</a>
+<details class="adm-menu" style="position:relative">
+<summary class="logout" style="list-style:none;cursor:pointer;display:inline-block;user-select:none">Settings ▾</summary>
+<div style="position:absolute;right:0;top:calc(100% + 6px);background:white;border:1px solid #e0e4ec;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.08);min-width:200px;z-index:50;overflow:hidden">
+<a href="/admin/templates" style="display:block;padding:10px 14px;text-decoration:none;color:#1F3864;font-size:13px;font-weight:600;border-bottom:1px solid #f0f2f5">WhatsApp Templates</a>
+<a href="/admin/referrals" style="display:block;padding:10px 14px;text-decoration:none;color:#1F3864;font-size:13px;font-weight:600">Referral Tracking</a>
+</div>
+</details>
 <button class="logout" id="logoutBtn">Logout</button>
 </div>
 </div>
@@ -2454,6 +2507,365 @@ document.getElementById('addBtn').addEventListener('click',async()=>{
     loadList();
   }catch(e){showToast('Network error',true);}
 });
+
+loadList();
+</script>
+</body></html>`;
+
+const ADMIN_REFERRALS_HTML = `<!DOCTYPE html><html><head><title>Referral Tracking - ResumeWala Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#f0f2f5;color:#222;padding:20px}
+h1{color:#1F3864;font-size:24px;margin-bottom:6px}
+.crumbs{font-size:13px;color:#666;margin-bottom:16px}
+.crumbs a{color:#1F3864;text-decoration:none}
+.crumbs a:hover{text-decoration:underline}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px}
+.header-meta{font-size:13px;color:#666}
+.header-meta strong{color:#1F3864}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;background:white;padding:12px 14px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.04)}
+.toolbar input{padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;flex:1;min-width:200px;font-family:inherit}
+.toolbar input:focus{outline:none;border-color:#1F3864}
+.toolbar select{padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;background:white;font-family:inherit;cursor:pointer}
+.toolbar label{font-size:12px;color:#666;font-weight:600}
+.btn{background:#1F3864;color:white;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;text-decoration:none;display:inline-block;font-family:inherit;font-weight:600}
+.btn:hover{background:#2a4a7a}
+.btn.muted{background:#eee;color:#333}
+.btn.muted:hover{background:#ddd}
+.card{background:white;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,0.06);overflow:hidden}
+table{width:100%;border-collapse:collapse}
+th,td{padding:11px 14px;text-align:left;font-size:13px;border-bottom:1px solid #eee;vertical-align:middle}
+th{background:#f8f9fa;color:#555;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{background:#eef2f7}
+th.sorted{color:#1F3864}
+th.sorted::after{content:attr(data-arrow);margin-left:4px;font-size:10px}
+tr:hover{background:#fafbfc}
+.empty{padding:60px 20px;text-align:center;color:#888;font-size:14px}
+.empty strong{display:block;color:#1F3864;font-size:16px;margin-bottom:6px}
+.loading{padding:30px;text-align:center;color:#888;font-size:13px}
+.refid-badge{display:inline-block;background:#e7f3ff;color:#0c63e4;padding:3px 8px;border-radius:4px;font-family:Menlo,Consolas,monospace;font-size:12px;font-weight:600}
+.count-cell{font-weight:700;color:#1F3864;cursor:pointer;padding:4px 10px;border-radius:6px;display:inline-block;min-width:36px;text-align:center;background:#eef2f7;transition:all 0.15s}
+.count-cell:hover{background:#1F3864;color:white;transform:translateY(-1px)}
+.count-cell.zero{color:#888;background:transparent;cursor:default;font-weight:500}
+.count-cell.zero:hover{background:transparent;color:#888;transform:none}
+.count-cell.txn{color:#0a7a3a;background:#e6f4ec}
+.count-cell.txn:hover{background:#0a7a3a;color:white}
+.count-cell.txn.zero{color:#888;background:transparent}
+.count-cell.txn.zero:hover{background:transparent;color:#888}
+.pagination{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#fafbfc;border-top:1px solid #eee;font-size:13px;color:#666}
+.pagination .pgs{display:flex;gap:6px}
+.pgs button{background:white;border:1px solid #ddd;padding:6px 11px;border-radius:5px;cursor:pointer;font-size:13px;font-family:inherit;color:#333}
+.pgs button:hover:not(:disabled){background:#f0f2f5;border-color:#1F3864;color:#1F3864}
+.pgs button:disabled{opacity:0.4;cursor:not-allowed}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal-bg.show{display:flex}
+.modal{background:white;border-radius:10px;max-width:560px;width:100%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.25)}
+.modal-head{padding:16px 20px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}
+.modal-head h3{font-size:16px;color:#1F3864;font-weight:700}
+.modal-head .sub{font-size:12px;color:#888;margin-top:2px;font-family:Menlo,Consolas,monospace}
+.modal-close{background:none;border:none;font-size:22px;color:#888;cursor:pointer;line-height:1;padding:4px}
+.modal-close:hover{color:#1F3864}
+.modal-body{overflow-y:auto;flex:1}
+.modal-body .empty{padding:40px}
+.toast{position:fixed;bottom:24px;right:24px;background:#1F3864;color:white;padding:12px 20px;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.2);font-size:14px;z-index:300;display:none}
+.toast.show{display:block}
+.toast.error{background:#c62828}
+</style></head>
+<body>
+<div class="crumbs"><a href="/admin">&larr; Admin Dashboard</a> &middot; Settings &middot; Referral Tracking</div>
+<div class="header">
+<div>
+<h1>Referral Tracking</h1>
+<div class="header-meta" id="headerMeta">Loading…</div>
+</div>
+<a href="/admin" class="btn muted">Back to Dashboard</a>
+</div>
+
+<div class="toolbar">
+<input id="searchInput" placeholder="Search by phone, name, or referral ID…" autocomplete="off">
+<label>Sort by</label>
+<select id="sortBy">
+<option value="created_at">Created date</option>
+<option value="tagged">Tagged users</option>
+<option value="txns">Transactions</option>
+<option value="phone">Phone</option>
+</select>
+<select id="sortDir">
+<option value="desc">Desc</option>
+<option value="asc">Asc</option>
+</select>
+<button class="btn muted" id="resetBtn">Reset</button>
+</div>
+
+<div class="card">
+<table id="tbl">
+<thead><tr>
+<th>Phone Number</th>
+<th>Name</th>
+<th>Referral ID</th>
+<th style="text-align:center">Tagged Users</th>
+<th style="text-align:center">Successful Transactions</th>
+<th>Created</th>
+</tr></thead>
+<tbody id="tbody"><tr><td colspan="6" class="loading">Loading referral users…</td></tr></tbody>
+</table>
+<div class="pagination" id="pagination" style="display:none">
+<div id="pageInfo"></div>
+<div class="pgs">
+<button id="prevBtn">← Previous</button>
+<button id="nextBtn">Next →</button>
+</div>
+</div>
+</div>
+
+<!-- Modal: Tagged Users -->
+<div class="modal-bg" id="taggedModal">
+<div class="modal">
+<div class="modal-head">
+<div>
+<h3>Tagged Users</h3>
+<div class="sub" id="taggedSub"></div>
+</div>
+<button class="modal-close" data-close="taggedModal">×</button>
+</div>
+<div class="modal-body" id="taggedBody"><div class="loading">Loading…</div></div>
+</div>
+</div>
+
+<!-- Modal: Successful Transactions -->
+<div class="modal-bg" id="txnsModal">
+<div class="modal">
+<div class="modal-head">
+<div>
+<h3>Successful Referral Transactions</h3>
+<div class="sub" id="txnsSub"></div>
+</div>
+<button class="modal-close" data-close="txnsModal">×</button>
+</div>
+<div class="modal-body" id="txnsBody"><div class="loading">Loading…</div></div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtDate(s){
+  if (!s) return '—';
+  const d = new Date(s);
+  if (isNaN(d)) return '—';
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function fmtPhone(p){
+  // Display 10-digit form when possible (strip +91/91 prefix)
+  if (!p) return '—';
+  const s = String(p).replace(/^\\+91/, '').replace(/^91(?=\\d{10}$)/, '');
+  return s || p;
+}
+function showToast(msg, isErr){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' error' : '');
+  setTimeout(() => { t.className = 'toast' + (isErr ? ' error' : ''); }, 2500);
+}
+
+const PAGE_SIZE = 50;
+let state = { offset: 0, total: 0, search: '', sortBy: 'created_at', sortDir: 'desc' };
+
+async function loadList(){
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="loading">Loading referral users…</td></tr>';
+  try {
+    const params = new URLSearchParams({
+      search: state.search,
+      sort_by: state.sortBy,
+      sort_dir: state.sortDir,
+      limit: PAGE_SIZE,
+      offset: state.offset,
+    });
+    const r = await fetch('/admin/referrals/list?' + params.toString());
+    if (r.status === 401) { window.location.href = '/admin'; return; }
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed to load');
+    state.total = data.total || 0;
+    render(data.rows || []);
+    renderPagination();
+    document.getElementById('headerMeta').innerHTML = '<strong>' + state.total + '</strong> referral user' + (state.total === 1 ? '' : 's') + ' total';
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty"><strong>Could not load</strong>' + esc(err.message || '') + '</td></tr>';
+  }
+}
+
+function render(rows){
+  const tbody = document.getElementById('tbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty"><strong>No referral users found yet.</strong>Once someone signs up at /referral and shares their link, they\\'ll show up here.</td></tr>';
+    return;
+  }
+  let html = '';
+  rows.forEach(r => {
+    const taggedClass = 'count-cell' + (r.tagged_count === 0 ? ' zero' : '');
+    const txnClass = 'count-cell txn' + (r.txn_count === 0 ? ' zero' : '');
+    html += '<tr>';
+    html += '<td>' + esc(fmtPhone(r.phone_number)) + '</td>';
+    html += '<td>' + esc(r.name || '—') + '</td>';
+    html += '<td><span class="refid-badge">' + esc(r.referral_id) + '</span></td>';
+    html += '<td style="text-align:center"><span class="' + taggedClass + '" data-act="tagged" data-refid="' + esc(r.referral_id) + '">' + r.tagged_count + '</span></td>';
+    html += '<td style="text-align:center"><span class="' + txnClass + '" data-act="txns" data-refid="' + esc(r.referral_id) + '">' + r.txn_count + '</span></td>';
+    html += '<td>' + fmtDate(r.created_at) + '</td>';
+    html += '</tr>';
+  });
+  tbody.innerHTML = html;
+
+  // Hook up clickable count cells
+  tbody.querySelectorAll('.count-cell:not(.zero)').forEach(el => {
+    el.addEventListener('click', () => {
+      const refId = el.dataset.refid;
+      if (el.dataset.act === 'tagged') openTaggedModal(refId);
+      else openTxnsModal(refId);
+    });
+  });
+}
+
+function renderPagination(){
+  const pg = document.getElementById('pagination');
+  if (state.total <= PAGE_SIZE) { pg.style.display = 'none'; return; }
+  pg.style.display = 'flex';
+  const start = state.offset + 1;
+  const end = Math.min(state.offset + PAGE_SIZE, state.total);
+  document.getElementById('pageInfo').textContent = 'Showing ' + start + '–' + end + ' of ' + state.total;
+  document.getElementById('prevBtn').disabled = state.offset === 0;
+  document.getElementById('nextBtn').disabled = state.offset + PAGE_SIZE >= state.total;
+}
+
+// Sort header click
+document.querySelectorAll('th').forEach((th, i) => {
+  const map = { 0: 'phone', 2: 'created_at', 3: 'tagged', 4: 'txns', 5: 'created_at' };
+  if (!(i in map)) return;
+  th.classList.add('sortable');
+  th.addEventListener('click', () => {
+    const newSort = map[i];
+    if (state.sortBy === newSort) {
+      state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+    } else {
+      state.sortBy = newSort;
+      state.sortDir = 'desc';
+    }
+    document.getElementById('sortBy').value = state.sortBy;
+    document.getElementById('sortDir').value = state.sortDir;
+    state.offset = 0;
+    loadList();
+  });
+});
+
+// Search debounce
+let searchTimer = null;
+document.getElementById('searchInput').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.offset = 0;
+    loadList();
+  }, 300);
+});
+
+document.getElementById('sortBy').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  state.offset = 0;
+  loadList();
+});
+document.getElementById('sortDir').addEventListener('change', e => {
+  state.sortDir = e.target.value;
+  state.offset = 0;
+  loadList();
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('sortBy').value = 'created_at';
+  document.getElementById('sortDir').value = 'desc';
+  state = { offset: 0, total: 0, search: '', sortBy: 'created_at', sortDir: 'desc' };
+  loadList();
+});
+
+document.getElementById('prevBtn').addEventListener('click', () => {
+  state.offset = Math.max(0, state.offset - PAGE_SIZE);
+  loadList();
+});
+document.getElementById('nextBtn').addEventListener('click', () => {
+  state.offset = state.offset + PAGE_SIZE;
+  loadList();
+});
+
+// Modals
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+document.querySelectorAll('.modal-close').forEach(b => b.addEventListener('click', () => closeModal(b.dataset.close)));
+document.querySelectorAll('.modal-bg').forEach(bg => {
+  bg.addEventListener('click', e => { if (e.target === bg) closeModal(bg.id); });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show'));
+});
+
+async function openTaggedModal(refId){
+  document.getElementById('taggedSub').textContent = refId;
+  document.getElementById('taggedBody').innerHTML = '<div class="loading">Loading…</div>';
+  openModal('taggedModal');
+  try {
+    const r = await fetch('/admin/referrals/' + encodeURIComponent(refId) + '/tagged-users');
+    if (r.status === 401) { window.location.href = '/admin'; return; }
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed');
+    if (!data.rows.length) {
+      document.getElementById('taggedBody').innerHTML = '<div class="empty"><strong>No tagged users</strong>Nobody has clicked this referral link and sent the prefilled WhatsApp message yet.</div>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Phone</th><th>Tagged</th><th style="text-align:center">Successful Payments</th></tr></thead><tbody>';
+    data.rows.forEach(row => {
+      html += '<tr>';
+      html += '<td>' + esc(fmtPhone(row.phone_number)) + '</td>';
+      html += '<td>' + fmtDate(row.attributed_at) + '</td>';
+      html += '<td style="text-align:center"><strong>' + row.paid_count + '</strong></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('taggedBody').innerHTML = html;
+  } catch (err) {
+    document.getElementById('taggedBody').innerHTML = '<div class="empty"><strong>Could not load</strong>' + esc(err.message || '') + '</div>';
+  }
+}
+
+async function openTxnsModal(refId){
+  document.getElementById('txnsSub').textContent = refId;
+  document.getElementById('txnsBody').innerHTML = '<div class="loading">Loading…</div>';
+  openModal('txnsModal');
+  try {
+    const r = await fetch('/admin/referrals/' + encodeURIComponent(refId) + '/transactions');
+    if (r.status === 401) { window.location.href = '/admin'; return; }
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed');
+    if (!data.rows.length) {
+      document.getElementById('txnsBody').innerHTML = '<div class="empty"><strong>No paid transactions yet</strong>Tagged users haven\\'t completed any payments under this referral.</div>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Phone</th><th style="text-align:center">Total Payments</th></tr></thead><tbody>';
+    let total = 0;
+    data.rows.forEach(row => {
+      total += row.payment_count;
+      html += '<tr>';
+      html += '<td>' + esc(fmtPhone(row.phone_number)) + '</td>';
+      html += '<td style="text-align:center"><strong>' + row.payment_count + '</strong></td>';
+      html += '</tr>';
+    });
+    html += '</tbody><tfoot><tr style="background:#f8f9fa;font-weight:700"><td>Total</td><td style="text-align:center">' + total + '</td></tr></tfoot></table>';
+    document.getElementById('txnsBody').innerHTML = html;
+  } catch (err) {
+    document.getElementById('txnsBody').innerHTML = '<div class="empty"><strong>Could not load</strong>' + esc(err.message || '') + '</div>';
+  }
+}
 
 loadList();
 </script>

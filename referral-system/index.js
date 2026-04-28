@@ -133,4 +133,27 @@ async function recordConversion(phoneNumber, resumeRequestId) {
   }
 }
 
-module.exports = { mount, validateReferralId, attributeReferral, recordConversion };
+async function adminListReferralUsers(opts) {
+  if (!_pool) return { rows: [], total: 0, limit: 0, offset: 0 };
+  return refDb.listReferralUsersForAdmin(_pool, opts || {});
+}
+
+async function adminGetTaggedUsers(referralId) {
+  if (!_pool) return [];
+  return refDb.getTaggedUsersForAdmin(_pool, referralId);
+}
+
+async function adminGetTransactions(referralId) {
+  if (!_pool) return [];
+  return refDb.getTransactionsForAdmin(_pool, referralId);
+}
+
+module.exports = {
+  mount,
+  validateReferralId,
+  attributeReferral,
+  recordConversion,
+  adminListReferralUsers,
+  adminGetTaggedUsers,
+  adminGetTransactions,
+};
