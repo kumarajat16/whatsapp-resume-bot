@@ -3069,10 +3069,12 @@ if (RAZORPAY_ENABLED) {
         await db.addMessage(resumeRequestId, 'system', 'payment_completed', 'system');
         console.log('Payment verified:', paymentId);
 
-        // Record referral conversion (if this user was referred). Best-effort.
+        // Credit referrer for this payment (every payment counts; same
+        // resume_transaction_id can't double-credit due to unique index).
         try {
           const conv = await referral.recordConversion(phone, resumeRequestId);
-          if (conv) console.log('[REFERRAL] Conversion recorded:', phone, '->', conv.referral_id);
+          if (conv && conv.credited) console.log('[REFERRAL] Credited:', phone, '->', conv.referral_id);
+          else if (conv) console.log('[REFERRAL] Conversion seen but not credited (dup txn):', phone);
         } catch (err) {
           console.error('[REFERRAL] conversion error (non-fatal):', err);
         }

@@ -102,25 +102,39 @@ async function attributeReferral(pool, phoneNumber, referralId) {
 }
 
 async function recordConversion(pool, phoneNumber, resumeRequestId) {
-  const r = await pool.query(
+  // Look up the FIRST referral attached to this phone. ON CONFLICT DO NOTHING
+  // in attributeReferral ensures this never changes once set, so every future
+  // payment by this user credits the original referrer.
+  const lookup = await pool.query(
+    'SELECT referral_id FROM referral_attributions WHERE phone_number = $1',
+    [phoneNumber]
+  );
+  if (!lookup.rows[0]) return null;
+  const referralId = lookup.rows[0].referral_id;
+
+  // Stamp the first-conversion timestamp once (idempotent).
+  await pool.query(
     `UPDATE referral_attributions
      SET converted_at = NOW(), resume_request_id = $2
-     WHERE phone_number = $1 AND converted_at IS NULL
-     RETURNING referral_id`,
+     WHERE phone_number = $1 AND converted_at IS NULL`,
     [phoneNumber, resumeRequestId]
   );
-  if (!r.rows[0]) return null;
-  const referralId = r.rows[0].referral_id;
+
+  // Credit the referrer for THIS payment. Unique constraint on
+  // resume_transaction_id makes Razorpay double-fires safe.
   try {
-    await pool.query(
-      `INSERT INTO referral_transactions (referral_id, resume_transaction_id) VALUES ($1, $2)
-       ON CONFLICT (resume_transaction_id) DO NOTHING`,
+    const ins = await pool.query(
+      `INSERT INTO referral_transactions (referral_id, resume_transaction_id)
+       VALUES ($1, $2)
+       ON CONFLICT (resume_transaction_id) DO NOTHING
+       RETURNING id`,
       [referralId, resumeRequestId]
     );
+    return { referral_id: referralId, credited: ins.rowCount > 0 };
   } catch (err) {
     console.error('[REFERRAL] insert txn error:', err);
+    return { referral_id: referralId, credited: false };
   }
-  return { referral_id: referralId };
 }
 
 module.exports = {
