@@ -4219,6 +4219,8 @@ async function start() {
   await db.initDb();
   console.log('ResumeWala.ai - Database initialized');
 
+  require('./referral-system').mount(app, db);
+
   const PORT = process.env.PORT || 8080;
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log('ResumeWala.ai running on port ' + PORT);
