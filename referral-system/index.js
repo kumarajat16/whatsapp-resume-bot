@@ -7,9 +7,11 @@ const refDb = require('./db');
 const utils = require('./utils');
 const { LANDING_HTML, DASHBOARD_HTML } = require('./templates');
 
+const PROD_BASE_URL = 'https://whatsapp-resume-bot-production.up.railway.app';
+
 function buildReferralLink(req, referralId) {
-  const base = (process.env.BASE_URL && process.env.BASE_URL.trim()) ||
-    (req.protocol + '://' + req.get('host'));
+  const envBase = (process.env.BASE_URL && process.env.BASE_URL.trim()) || '';
+  const base = envBase || PROD_BASE_URL;
   return base.replace(/\/$/, '') + '/start?ref=' + referralId;
 }
 

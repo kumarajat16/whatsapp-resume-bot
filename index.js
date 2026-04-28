@@ -1193,6 +1193,17 @@ app.get('/start', async (req, res) => {
     console.error('[REFERRAL] /start validate error (non-fatal):', err.message);
   }
 
+  // 7-day attribution cookie (fallback layer; primary attribution is via the
+  // WhatsApp deeplink message text parsed in handleIncomingMessage).
+  if (validReferralId) {
+    res.cookie('rw_ref', validReferralId, {
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: req.protocol === 'https',
+    });
+  }
+
   let waMessage = 'Hi ResumeWala, I want to create my professional resume.';
   if (validReferralId) waMessage += '\n\nReferral ID: ' + validReferralId;
   if (shortId) waMessage += '\n\nRef: ' + shortId;

@@ -183,7 +183,7 @@ const LANDING_HTML = '<!DOCTYPE html><html lang="en"><head>' +
       '<h2>Get Your Referral Link</h2>' +
       '<div class="input-group">' +
         '<label for="name">Your Name</label>' +
-        '<input id="name" type="text" placeholder="Rajat Kumar" maxlength="60" autocomplete="name">' +
+        '<input id="name" type="text" placeholder="Jayant Kumar" maxlength="60" autocomplete="name">' +
       '</div>' +
       '<div class="input-group">' +
         '<label for="phone">Phone Number</label>' +
@@ -293,81 +293,120 @@ const LANDING_HTML = '<!DOCTYPE html><html lang="en"><head>' +
 
 // ─── DASHBOARD PAGE ─────────────────────────────────────────────────────────
 
+const DASH_STYLES = `
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,sans-serif;background:#fafafa;color:#0f172a;line-height:1.5;overflow-x:hidden;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{min-height:100vh;background:radial-gradient(1200px 600px at 50% -200px,rgba(99,102,241,0.06),transparent),linear-gradient(180deg,#fafafa 0%,#f4f4f5 100%);position:relative}
+button{font-family:inherit;cursor:pointer;border:none;font-size:15px;font-weight:600;transition:all 0.2s ease;letter-spacing:-0.01em}
+button:active{transform:scale(0.98)}
+.container{position:relative;z-index:1;max-width:560px;margin:0 auto;padding:20px 16px 48px}
+@media(min-width:768px){.container{max-width:640px;padding:32px 24px 64px}}
+
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-100px);background:#0f172a;color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:500;z-index:1000;transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1);box-shadow:0 10px 40px -10px rgba(0,0,0,0.3)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.toast.error{background:#dc2626}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulseRing{0%{box-shadow:0 0 0 0 rgba(99,102,241,0.45)}70%{box-shadow:0 0 0 12px rgba(99,102,241,0)}100%{box-shadow:0 0 0 0 rgba(99,102,241,0)}}
+@keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fall{0%{transform:translateY(0) rotate(0);opacity:1}100%{transform:translateY(110vh) rotate(720deg);opacity:0}}
+
+/* Header */
+.dash-header{display:flex;justify-content:space-between;align-items:flex-start;padding:4px 0 24px;animation:fadeUp 0.5s ease-out}
+.h-greeting{font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-0.02em;line-height:1.2}
+.h-sub{font-size:14px;color:#64748b;margin-top:6px;font-weight:500}
+.h-sub strong{color:#0f172a;font-weight:700}
+.btn-link{background:transparent;color:#94a3b8;font-size:13px;padding:8px 12px;border-radius:8px;font-weight:500}
+.btn-link:hover{color:#dc2626;background:#fef2f2}
+
+/* Cards */
+.card{background:#fff;border:1px solid rgba(15,23,42,0.06);border-radius:18px;padding:22px 20px;box-shadow:0 1px 2px rgba(15,23,42,0.04),0 4px 16px rgba(15,23,42,0.04);margin:14px 0}
+@media(min-width:768px){.card{padding:26px 24px}}
+
+/* Referral link card */
+.link-card{animation:fadeUp 0.5s ease-out 0.1s both}
+.lc-eyebrow{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px}
+.lc-link{display:block;background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid rgba(15,23,42,0.06);border-radius:12px;padding:14px 16px;font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:#0f172a;word-break:break-all;margin-bottom:14px;font-weight:500;line-height:1.5}
+.lc-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-copy{background:#0f172a;color:#fff;padding:13px 14px;border-radius:11px;font-weight:600;font-size:14px;letter-spacing:-0.01em;display:flex;align-items:center;justify-content:center;gap:6px}
+.btn-copy:hover{background:#1e293b;transform:translateY(-1px);box-shadow:0 6px 20px -6px rgba(15,23,42,0.4)}
+.btn-copy.copied{background:#10b981}
+.btn-share{background:#25D366;color:#fff;padding:13px 14px;border-radius:11px;font-weight:600;font-size:14px;letter-spacing:-0.01em;display:flex;align-items:center;justify-content:center;gap:6px}
+.btn-share:hover{background:#1da851;transform:translateY(-1px);box-shadow:0 6px 20px -6px rgba(37,211,102,0.45)}
+
+/* Carousel (features + tips) */
+.carousel{position:relative;animation:fadeUp 0.5s ease-out 0.2s both;margin:14px 0}
+.carousel-viewport{overflow:hidden;border-radius:18px}
+.carousel-track{display:flex;transition:transform 0.45s cubic-bezier(0.4,0,0.2,1);will-change:transform}
+.carousel-slide{flex:0 0 100%;min-width:0}
+.feat-card{background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#fff;border-radius:18px;padding:26px 22px;min-height:140px;display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden}
+.feat-card::after{content:'';position:absolute;right:-30px;top:-30px;width:140px;height:140px;background:radial-gradient(circle,rgba(99,102,241,0.25),transparent 70%);pointer-events:none}
+.feat-icon{font-size:28px;margin-bottom:10px}
+.feat-title{font-size:18px;font-weight:700;letter-spacing:-0.015em;line-height:1.3;color:#fff}
+.feat-sub{font-size:13px;color:rgba(255,255,255,0.65);margin-top:6px;font-weight:500}
+.tip-card{background:#fff;border:1px solid rgba(15,23,42,0.06);border-radius:18px;padding:22px 20px;min-height:120px;display:flex;align-items:center;gap:16px}
+.tip-emoji{font-size:30px;flex-shrink:0}
+.tip-text{font-size:14px;color:#334155;font-weight:500;line-height:1.5}
+.carousel-dots{display:flex;gap:6px;justify-content:center;margin-top:14px}
+.cdot{width:6px;height:6px;border-radius:50%;background:#cbd5e1;transition:all 0.3s;cursor:pointer;border:none;padding:0}
+.cdot.active{background:#0f172a;width:22px;border-radius:3px}
+
+/* Progress card */
+.progress-card{animation:fadeUp 0.5s ease-out 0.3s both}
+.p-eyebrow{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px}
+.p-headline{font-size:18px;font-weight:700;color:#0f172a;letter-spacing:-0.015em;line-height:1.3}
+.p-headline strong{color:#4f46e5}
+.p-sub{font-size:13px;color:#64748b;margin-top:6px;font-weight:500}
+.p-bar-wrap{position:relative;height:10px;background:#f1f5f9;border-radius:999px;overflow:hidden;margin:18px 0 8px}
+.p-fill{height:100%;background:linear-gradient(90deg,#6366f1 0%,#8b5cf6 100%);border-radius:999px;transition:width 1s cubic-bezier(0.4,0,0.2,1);position:relative}
+.p-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.35),transparent);background-size:400px 100%;animation:shimmer 2.5s infinite}
+.p-bar-wrap.bumper .p-fill{background:linear-gradient(90deg,#f59e0b 0%,#f97316 100%)}
+.p-meta{display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;font-weight:600;letter-spacing:0.02em}
+
+/* Reward ladder */
+.ladder-card{animation:fadeUp 0.5s ease-out 0.4s both}
+.lad-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px}
+.lad-title{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.08em}
+.lad-total{font-size:12px;color:#475569;font-weight:600}
+.lad-total strong{color:#0f172a;font-weight:800}
+.lad-list{position:relative;padding:8px 0 0 36px;margin-top:18px}
+.lad-list::before{content:'';position:absolute;left:13px;top:14px;bottom:14px;width:2px;background:linear-gradient(180deg,#e2e8f0 0%,#e2e8f0 100%);border-radius:2px}
+.lad-row{position:relative;display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;padding:10px 0}
+.lad-node{position:absolute;left:-29px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;background:#fff;border:2px solid #e2e8f0;display:flex;align-items:center;justify-content:center;color:transparent;font-size:11px;font-weight:900;line-height:1;transition:all 0.3s}
+.lad-row.hit .lad-node{background:linear-gradient(135deg,#10b981,#059669);border-color:transparent;color:#fff;box-shadow:0 0 0 4px rgba(16,185,129,0.12)}
+.lad-row.current .lad-node{border-color:#6366f1;background:#fff;animation:pulseRing 2s infinite}
+.lad-row.bumper .lad-node{background:#fff;border-color:#f59e0b}
+.lad-row.bumper.hit .lad-node{background:linear-gradient(135deg,#f59e0b,#f97316);border-color:transparent;color:#fff;box-shadow:0 0 0 4px rgba(245,158,11,0.18)}
+.lad-info{display:flex;align-items:baseline;gap:8px;min-width:0}
+.lad-refs{font-size:14px;color:#0f172a;font-weight:600;letter-spacing:-0.01em}
+.lad-row:not(.hit):not(.current) .lad-refs{color:#64748b;font-weight:500}
+.lad-tag{font-size:10px;font-weight:800;letter-spacing:0.06em;padding:3px 7px;border-radius:5px;text-transform:uppercase;background:#fef3c7;color:#92400e}
+.lad-row.bumper.hit .lad-tag{background:#fde68a;color:#78350f}
+.lad-reward{font-size:14px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
+.lad-row:not(.hit):not(.current) .lad-reward{color:#94a3b8}
+.lad-row.bumper .lad-reward{color:#92400e}
+.lad-row.bumper.hit .lad-reward{color:#78350f}
+
+/* Section labels */
+.section-eyebrow{display:flex;align-items:center;gap:10px;font-size:11px;color:#94a3b8;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:26px 4px 6px}
+.section-eyebrow::before,.section-eyebrow::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(15,23,42,0.08),transparent)}
+
+/* Loading */
+.spinner-wrap{display:flex;justify-content:center;align-items:center;min-height:60vh;color:#94a3b8;font-size:14px;gap:10px}
+.spinner{width:22px;height:22px;border:2.5px solid #e2e8f0;border-top-color:#6366f1;border-radius:50%;animation:spin 0.7s linear infinite}
+
+/* Confetti */
+.confetti{position:fixed;top:-10px;width:8px;height:14px;opacity:0;pointer-events:none;z-index:999;border-radius:1px}
+`;
+
 const DASHBOARD_HTML = '<!DOCTYPE html><html lang="en"><head>' +
   '<meta charset="utf-8">' +
-  '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">' +
   '<title>Your Referral Dashboard — ResumeWala</title>' +
-  '<style>' + SHARED_HEAD_STYLES + `
-.dash-header{display:flex;justify-content:space-between;align-items:center;padding:8px 0 16px;animation:fadeUp 0.5s ease-out}
-.greeting{font-size:13px;color:#6b7280;font-weight:600}
-.greeting strong{color:#1F3864;font-size:18px;display:block;margin-top:2px;font-weight:800}
-.btn-link{background:transparent;color:#9aa3b8;font-size:12px;padding:6px 10px;border-radius:6px;font-weight:600}
-.btn-link:hover{color:#dc2626;background:#fef2f2}
-.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;animation:fadeUp 0.5s ease-out 0.1s both}
-.stat-card{background:white;padding:18px 16px;border-radius:14px;text-align:center;box-shadow:0 2px 8px rgba(31,56,100,0.06);border:1px solid rgba(31,56,100,0.05);position:relative;overflow:hidden}
-.stat-card.gold{background:linear-gradient(135deg,#FFF9E5,#FFF1C2);border-color:rgba(255,180,0,0.3)}
-.stat-value{font-size:34px;font-weight:900;color:#1F3864;line-height:1;margin-bottom:6px;font-variant-numeric:tabular-nums}
-.stat-card.gold .stat-value{color:#8B5A00}
-.stat-label{font-size:12px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.6px}
-.stat-card.gold .stat-label{color:#8B5A00}
-.link-card{animation:fadeUp 0.5s ease-out 0.2s both}
-.link-card h3{font-size:14px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:12px}
-.link-box{background:linear-gradient(135deg,#f8fafc,#eef2f7);border:1.5px dashed #1F3864;border-radius:10px;padding:14px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:#1F3864;word-break:break-all;margin-bottom:14px;font-weight:600}
-.link-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.btn-copy{background:#1F3864;color:white;padding:13px;border-radius:10px;font-weight:700;font-size:14px}
-.btn-copy:hover{background:#2D4F8E}
-.btn-copy.copied{background:#10b981}
-.btn-share{background:#25D366;color:white;padding:13px;border-radius:10px;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;gap:6px}
-.btn-share:hover{background:#1da851}
-.progress-card{animation:fadeUp 0.5s ease-out 0.3s both}
-.progress-title{color:#1F3864;font-weight:700;font-size:15px;margin-bottom:4px}
-.progress-sub{color:#6b7280;font-size:13px;margin-bottom:14px}
-.progress-bar-wrap{position:relative;height:12px;background:#eef2f7;border-radius:8px;overflow:hidden;margin-bottom:8px}
-.progress-fill{height:100%;background:linear-gradient(90deg,#1F3864,#2D4F8E);border-radius:8px;transition:width 1s cubic-bezier(0.4,0,0.2,1);position:relative}
-.progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.3),transparent);background-size:400px 100%;animation:shimmer 2s infinite}
-.progress-bar-wrap.bumper .progress-fill{background:linear-gradient(90deg,#FFB400,#FF8A00)}
-.progress-end{display:flex;justify-content:space-between;font-size:11px;color:#9aa3b8;font-weight:600}
-.bumper-card{background:linear-gradient(135deg,#FFF4D6,#FFE9B0);border:1.5px solid #FFB400;border-radius:14px;padding:18px;text-align:center;animation:fadeUp 0.5s ease-out 0.4s both,pulse 2.5s infinite}
-.bumper-card.unlocked{animation:fadeUp 0.5s ease-out 0.4s both;background:linear-gradient(135deg,#D1FAE5,#A7F3D0);border-color:#10b981}
-.bumper-emoji{font-size:32px;margin-bottom:6px}
-.bumper-title{color:#8B5A00;font-weight:800;font-size:16px;margin-bottom:4px}
-.bumper-card.unlocked .bumper-title{color:#065f46}
-.bumper-sub{color:#A8741A;font-size:13px;font-weight:600}
-.bumper-card.unlocked .bumper-sub{color:#047857}
-.ladder-card{padding:20px 16px;animation:fadeUp 0.5s ease-out 0.5s both}
-.ladder-card h3{font-size:14px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:14px}
-.rung{display:grid;grid-template-columns:auto auto 1fr auto auto;gap:8px;align-items:center;padding:11px 14px;border-radius:10px;margin:5px 0;background:#f8fafc;transition:all 0.3s;font-size:14px}
-.rung-hit{background:linear-gradient(135deg,#D1FAE5,#A7F3D0);border:1px solid #10b981}
-.rung-num{font-weight:800;color:#1F3864;font-size:18px;min-width:32px}
-.rung-hit .rung-num{color:#065f46}
-.rung-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:700}
-.rung-hit .rung-label{color:#047857}
-.rung-arrow{color:#9aa3b8}
-.rung-hit .rung-arrow{color:#10b981}
-.rung-reward{color:#D88A00;font-weight:800;font-size:16px}
-.rung-hit .rung-reward{color:#065f46}
-.rung-tick{color:#10b981;font-weight:900;font-size:18px}
-.rung-bumper{background:linear-gradient(135deg,#FFF4D6,#FFE9B0);border:1px solid #FFB400;margin-top:10px}
-.rung-bumper .rung-label{color:#8B5A00;font-weight:800}
-.tip-row{display:flex;gap:10px;overflow-x:auto;padding:18px 4px 6px;margin:0 -4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
-.tip-row::-webkit-scrollbar{display:none}
-.tip{flex:0 0 200px;background:white;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(31,56,100,0.06);border:1px solid rgba(31,56,100,0.06);scroll-snap-align:start;animation:float 5s ease-in-out infinite}
-.tip:nth-child(2){animation-delay:0.5s}
-.tip:nth-child(3){animation-delay:1s}
-.tip:nth-child(4){animation-delay:1.5s}
-.tip-emoji{font-size:22px;margin-bottom:6px}
-.tip-text{font-size:13px;color:#3a4258;line-height:1.4;font-weight:500}
-.section-title{text-align:center;font-size:13px;color:#9aa3b8;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin:28px 0 12px}
-.card{background:white;border-radius:16px;padding:20px;box-shadow:0 4px 16px rgba(31,56,100,0.08);border:1px solid rgba(31,56,100,0.05);margin:12px 0}
-.spinner-wrap{display:flex;justify-content:center;align-items:center;min-height:50vh;color:#9aa3b8;font-size:14px}
-.spinner{width:24px;height:24px;border:3px solid #eef2f7;border-top-color:#1F3864;border-radius:50%;animation:spin 0.7s linear infinite;margin-right:10px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.confetti{position:fixed;top:-10px;width:8px;height:14px;opacity:0;pointer-events:none;z-index:999}
-@keyframes fall{0%{transform:translateY(0) rotate(0);opacity:1}100%{transform:translateY(110vh) rotate(720deg);opacity:0}}
-` + '</style></head><body>' +
-  BG_ICONS_SVG +
+  '<style>' + DASH_STYLES + '</style></head><body>' +
   '<div class="container">' +
-    '<div id="content" class="spinner-wrap"><div class="spinner"></div>Loading your dashboard...</div>' +
+    '<div id="content" class="spinner-wrap"><div class="spinner"></div>Loading your dashboard…</div>' +
   '</div>' +
   '<div class="toast" id="toast"></div>' +
 
@@ -386,54 +425,100 @@ const DASHBOARD_HTML = '<!DOCTYPE html><html lang="en"><head>' +
 
   function escHtml(s){ return String(s||'').replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]); }); }
 
-  function buildLadder(count){
+  function buildLadderHtml(count){
     var rows = '';
+    var nextMilestone = -1;
+    if (count < 50) nextMilestone = (Math.floor(count / 5) + 1) * 5;
+    else if (count < 51) nextMilestone = 51;
+
     for (var m = 1; m <= 10; m++) {
       var refs = m * 5;
       var reward = m * 50;
       var hit = count >= refs;
-      rows += '<div class="rung ' + (hit ? 'rung-hit' : '') + '">';
-      rows += '<span class="rung-num">' + refs + '</span>';
-      rows += '<span class="rung-label">referrals</span>';
-      rows += '<span class="rung-arrow">→</span>';
-      rows += '<span class="rung-reward">₹' + reward + '</span>';
-      rows += '<span class="rung-tick">' + (hit ? '✓' : '') + '</span>';
+      var isCurrent = !hit && refs === nextMilestone;
+      var cls = 'lad-row' + (hit ? ' hit' : '') + (isCurrent ? ' current' : '');
+      rows += '<div class="' + cls + '">';
+      rows += '<div class="lad-node">' + (hit ? '✓' : '') + '</div>';
+      rows += '<div class="lad-info"><span class="lad-refs">' + refs + ' referrals</span></div>';
+      rows += '<div class="lad-reward">₹' + reward + '</div>';
       rows += '</div>';
     }
     var bumperHit = count >= 51;
-    rows += '<div class="rung rung-bumper ' + (bumperHit ? 'rung-hit' : '') + '">';
-    rows += '<span class="rung-num">51</span>';
-    rows += '<span class="rung-label">BUMPER</span>';
-    rows += '<span class="rung-arrow">→</span>';
-    rows += '<span class="rung-reward">₹500</span>';
-    rows += '<span class="rung-tick">' + (bumperHit ? '✓' : '') + '</span>';
+    var bumperCurrent = !bumperHit && 51 === nextMilestone;
+    var bcls = 'lad-row bumper' + (bumperHit ? ' hit' : '') + (bumperCurrent ? ' current' : '');
+    rows += '<div class="' + bcls + '">';
+    rows += '<div class="lad-node">' + (bumperHit ? '★' : '') + '</div>';
+    rows += '<div class="lad-info"><span class="lad-refs">51 referrals</span><span class="lad-tag">Bonus</span></div>';
+    rows += '<div class="lad-reward">₹500</div>';
     rows += '</div>';
     return rows;
   }
 
   function fireConfetti(){
-    var colors = ['#FFB400','#1F3864','#25D366','#D88A00','#2D4F8E'];
-    for (var i = 0; i < 40; i++) {
+    var colors = ['#6366f1','#8b5cf6','#10b981','#f59e0b','#ec4899','#0f172a'];
+    for (var i = 0; i < 50; i++) {
       var d = document.createElement('div');
       d.className = 'confetti';
       d.style.left = Math.random() * 100 + 'vw';
       d.style.background = colors[i % colors.length];
-      d.style.animation = 'fall ' + (1.8 + Math.random() * 1.4) + 's ease-in ' + (Math.random() * 0.6) + 's forwards';
+      d.style.animation = 'fall ' + (1.8 + Math.random() * 1.6) + 's ease-in ' + (Math.random() * 0.5) + 's forwards';
       document.body.appendChild(d);
-      setTimeout(function(el){ return function(){ el.remove(); }; }(d), 4000);
+      setTimeout(function(el){ return function(){ el.remove(); }; }(d), 4500);
     }
   }
 
   function animateNumber(el, target){
+    if (!el) return;
     var start = 0;
-    var duration = 800;
+    var duration = 900;
     var t0 = performance.now();
     function tick(now){
       var p = Math.min((now - t0) / duration, 1);
-      el.textContent = Math.round(start + (target - start) * p);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(start + (target - start) * eased);
       if (p < 1) requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
+  }
+
+  function setupCarousel(rootId, count, intervalMs){
+    var root = document.getElementById(rootId);
+    if (!root) return;
+    var track = root.querySelector('.carousel-track');
+    var dots = root.querySelectorAll('.cdot');
+    var idx = 0;
+    var timer = null;
+
+    function go(i){
+      idx = ((i % count) + count) % count;
+      track.style.transform = 'translateX(-' + (idx * 100) + '%)';
+      dots.forEach(function(el, j){ el.classList.toggle('active', j === idx); });
+    }
+
+    function start(){
+      stop();
+      timer = setInterval(function(){ go(idx + 1); }, intervalMs);
+    }
+    function stop(){ if (timer) { clearInterval(timer); timer = null; } }
+
+    dots.forEach(function(el){
+      el.addEventListener('click', function(){
+        go(parseInt(this.dataset.i, 10));
+        start();
+      });
+    });
+
+    var startX = null;
+    track.addEventListener('touchstart', function(e){ startX = e.touches[0].clientX; stop(); }, { passive: true });
+    track.addEventListener('touchend', function(e){
+      if (startX === null) return;
+      var dx = e.changedTouches[0].clientX - startX;
+      if (Math.abs(dx) > 40) go(idx + (dx < 0 ? 1 : -1));
+      startX = null;
+      start();
+    });
+
+    start();
   }
 
   async function load(){
@@ -452,96 +537,144 @@ const DASHBOARD_HTML = '<!DOCTYPE html><html lang="en"><head>' +
       if (!r.ok) throw new Error(data.error || 'Failed to load');
       render(data);
     } catch(err) {
-      document.getElementById('content').innerHTML = '<div style="text-align:center;padding:40px 20px;color:#dc2626">Could not load dashboard. <button onclick="location.reload()" style="background:#1F3864;color:white;padding:8px 16px;border-radius:8px;margin-top:12px;cursor:pointer">Retry</button></div>';
+      document.getElementById('content').className = '';
+      document.getElementById('content').innerHTML = '<div style="text-align:center;padding:60px 20px;color:#dc2626">Could not load dashboard.<br><button onclick="location.reload()" style="background:#0f172a;color:#fff;padding:10px 18px;border-radius:10px;margin-top:14px;cursor:pointer;font-weight:600">Retry</button></div>';
     }
   }
 
   function render(d){
     var first = (saved.name || '').split(' ')[0] || 'there';
-    var nextText = '';
-    var progressPct = 0;
-    var isBumperBar = false;
+    var count = d.referral_count || 0;
+    var nm = d.next_milestone;
 
-    if (d.next) {
-      if (d.next.kind === 'milestone') {
-        nextText = '<strong>' + d.next.refs_away + '</strong> more ' + (d.next.refs_away === 1 ? 'referral' : 'referrals') + ' to unlock <strong>₹' + d.next.reward + '</strong>';
-        var prevCount = d.next.count - 5;
-        progressPct = ((d.referral_count - prevCount) / 5) * 100;
+    // Progress headline + bar (correctly handle 0 referrals and end-of-ladder)
+    var headline, progressPct, isBumperBar = false;
+    if (nm) {
+      if (nm.kind === 'milestone') {
+        headline = '<strong>' + nm.refs_away + '</strong> more ' + (nm.refs_away === 1 ? 'referral' : 'referrals') + ' to unlock <strong>₹' + nm.reward + '</strong>';
+        var prevCount = nm.count - 5;
+        progressPct = ((count - prevCount) / 5) * 100;
       } else {
-        nextText = '<strong>' + d.next.refs_away + '</strong> more to the <strong>₹500 BUMPER</strong> 🎯';
-        progressPct = ((d.referral_count - 50) / 1) * 100;
+        headline = '<strong>' + nm.refs_away + '</strong> more for the <strong>₹500 bonus</strong> 🎯';
+        progressPct = ((count - 50) / 1) * 100;
         isBumperBar = true;
       }
     } else {
-      nextText = 'You\\'ve hit every milestone — legend! 🏆';
+      headline = 'You\\'ve maxed out at <strong>₹1000</strong> — legend! 🏆';
       progressPct = 100;
     }
+    if (count === 0) headline = 'Start sharing to unlock your first <strong>₹50</strong>';
 
     var html = '';
+
+    // 1. HEADER
     html += '<header class="dash-header">';
-    html += '<div class="greeting">Welcome back<strong>' + escHtml(first) + ' 👋</strong></div>';
+    html += '<div>';
+    html += '<div class="h-greeting">Welcome ' + escHtml(first) + ' 👋</div>';
+    html += '<div class="h-sub">You have referred <strong>' + count + '</strong> ' + (count === 1 ? 'friend' : 'friends') + '</div>';
+    html += '</div>';
     html += '<button class="btn-link" id="logoutBtn">Log out</button>';
     html += '</header>';
 
-    html += '<div class="stats-grid">';
-    html += '<div class="stat-card"><div class="stat-value" id="countV">0</div><div class="stat-label">Referrals</div></div>';
-    html += '<div class="stat-card gold"><div class="stat-value">₹<span id="earnedV">0</span></div><div class="stat-label">Earned</div></div>';
-    html += '</div>';
-
+    // 2. REFERRAL LINK CARD
     html += '<section class="card link-card">';
-    html += '<h3>Your Referral Link</h3>';
-    html += '<div class="link-box" id="linkBox">' + escHtml(d.referral_link) + '</div>';
-    html += '<div class="link-actions">';
-    html += '<button class="btn-copy" id="copyBtn">📋 Copy Link</button>';
-    html += '<button class="btn-share" id="shareBtn">📲 Share on WhatsApp</button>';
+    html += '<div class="lc-eyebrow">Your referral link</div>';
+    html += '<div class="lc-link">' + escHtml(d.referral_link) + '</div>';
+    html += '<div class="lc-actions">';
+    html += '<button class="btn-copy" id="copyBtn"><span>Copy Link</span></button>';
+    html += '<button class="btn-share" id="shareBtn"><span>Share on WhatsApp</span></button>';
     html += '</div></section>';
 
+    // 3. FEATURES CAROUSEL (placed right after link, per spec)
+    html += '<div class="carousel" id="featCarousel">';
+    html += '<div class="carousel-viewport"><div class="carousel-track">';
+    var feats = [
+      { icon: '🎙️', title: 'Create your resume by speaking', sub: 'Voice notes in any language work' },
+      { icon: '⚡', title: 'Most users finish in under 5 minutes', sub: 'Faster than ordering chai' },
+      { icon: '🍿', title: '₹49 — cheaper than evening snacks', sub: 'And the resume lasts years' }
+    ];
+    feats.forEach(function(f){
+      html += '<div class="carousel-slide"><div class="feat-card">';
+      html += '<div class="feat-icon">' + f.icon + '</div>';
+      html += '<div class="feat-title">' + f.title + '</div>';
+      html += '<div class="feat-sub">' + f.sub + '</div>';
+      html += '</div></div>';
+    });
+    html += '</div></div>';
+    html += '<div class="carousel-dots">';
+    for (var fi = 0; fi < feats.length; fi++) {
+      html += '<button class="cdot' + (fi === 0 ? ' active' : '') + '" data-i="' + fi + '" aria-label="Slide ' + (fi+1) + '"></button>';
+    }
+    html += '</div></div>';
+
+    // 4. PROGRESS CARD
     html += '<section class="card progress-card">';
-    html += '<div class="progress-title">' + nextText + '</div>';
-    html += '<div class="progress-sub">Keep going — every share counts.</div>';
-    html += '<div class="progress-bar-wrap' + (isBumperBar ? ' bumper' : '') + '"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>';
-    html += '<div class="progress-end"><span>0</span><span>Up to ₹' + d.max_possible + ' total</span></div>';
+    html += '<div class="p-eyebrow">Progress</div>';
+    html += '<div class="p-headline">' + headline + '</div>';
+    html += '<div class="p-sub">' + count + ' / ' + (nm ? nm.count : 51) + ' referrals</div>';
+    html += '<div class="p-bar-wrap' + (isBumperBar ? ' bumper' : '') + '"><div class="p-fill" id="progressFill" style="width:0%"></div></div>';
+    html += '<div class="p-meta"><span>0</span><span>Up to ₹' + d.max_possible + '</span></div>';
     html += '</section>';
 
-    html += '<section class="bumper-card' + (d.bumper_unlocked ? ' unlocked' : '') + '">';
-    html += '<div class="bumper-emoji">' + (d.bumper_unlocked ? '🏆' : '🎯') + '</div>';
-    html += '<div class="bumper-title">' + (d.bumper_unlocked ? '₹500 Bumper Unlocked!' : 'Hit 51 referrals = ₹500 BUMPER') + '</div>';
-    html += '<div class="bumper-sub">' + (d.bumper_unlocked ? 'Maxed out at ₹1000 total. You\\'re a legend.' : 'A one-shot bonus on top of your milestone earnings') + '</div>';
-    html += '</section>';
-
-    html += '<section class="card ladder-card"><h3>Reward Ladder</h3>' + buildLadder(d.referral_count) + '</section>';
-
-    html += '<div class="section-title">Tips to share more</div>';
-    html += '<div class="tip-row">';
-    html += '<div class="tip"><div class="tip-emoji">💬</div><div class="tip-text">Drop your link in college / office WhatsApp groups</div></div>';
-    html += '<div class="tip"><div class="tip-emoji">📱</div><div class="tip-text">Share on Instagram story — hides the link, shows reach</div></div>';
-    html += '<div class="tip"><div class="tip-emoji">🎯</div><div class="tip-text">DM friends actively job hunting — they\\'ll thank you</div></div>';
-    html += '<div class="tip"><div class="tip-emoji">🔁</div><div class="tip-text">Post on LinkedIn — every comment is free reach</div></div>';
+    // 5. REWARD LADDER
+    html += '<section class="card ladder-card">';
+    html += '<div class="lad-header">';
+    html += '<div class="lad-title">Reward Ladder</div>';
+    html += '<div class="lad-total"><strong>₹' + d.amount_earned + '</strong> earned</div>';
     html += '</div>';
+    html += '<div class="lad-list">' + buildLadderHtml(count) + '</div>';
+    html += '</section>';
+
+    // 6. TIPS CAROUSEL (bottom)
+    html += '<div class="section-eyebrow">Tips to share more</div>';
+    html += '<div class="carousel" id="tipCarousel">';
+    html += '<div class="carousel-viewport"><div class="carousel-track">';
+    var tips = [
+      { emoji: '💬', text: 'Drop your link in college / office WhatsApp groups' },
+      { emoji: '🎯', text: 'DM friends actively job hunting — they\\'ll thank you' },
+      { emoji: '📸', text: 'Share on your Instagram story for a quick boost' },
+      { emoji: '💼', text: 'Post on LinkedIn — every comment is free reach' }
+    ];
+    tips.forEach(function(t){
+      html += '<div class="carousel-slide"><div class="tip-card">';
+      html += '<div class="tip-emoji">' + t.emoji + '</div>';
+      html += '<div class="tip-text">' + t.text + '</div>';
+      html += '</div></div>';
+    });
+    html += '</div></div>';
+    html += '<div class="carousel-dots">';
+    for (var ti = 0; ti < tips.length; ti++) {
+      html += '<button class="cdot' + (ti === 0 ? ' active' : '') + '" data-i="' + ti + '" aria-label="Tip ' + (ti+1) + '"></button>';
+    }
+    html += '</div></div>';
 
     document.getElementById('content').className = '';
     document.getElementById('content').innerHTML = html;
 
-    // Hook up actions
-    animateNumber(document.getElementById('countV'), d.referral_count);
-    animateNumber(document.getElementById('earnedV'), d.amount_earned);
+    // Animate progress fill
     setTimeout(function(){
-      document.getElementById('progressFill').style.width = Math.min(100, Math.max(0, progressPct)) + '%';
-    }, 100);
+      var pf = document.getElementById('progressFill');
+      if (pf) pf.style.width = Math.min(100, Math.max(0, progressPct)) + '%';
+    }, 120);
 
+    // Logout
     document.getElementById('logoutBtn').addEventListener('click', function(){
       localStorage.removeItem('rw_referral');
       window.location.href = '/referral';
     });
 
+    // Copy
     var copyBtn = document.getElementById('copyBtn');
     copyBtn.addEventListener('click', function(){
       var link = d.referral_link;
       function done(){
         copyBtn.classList.add('copied');
-        copyBtn.textContent = '✓ Copied!';
+        copyBtn.innerHTML = '<span>✓ Copied</span>';
         showToast('Link copied!');
-        setTimeout(function(){ copyBtn.classList.remove('copied'); copyBtn.textContent = '📋 Copy Link'; }, 2000);
+        setTimeout(function(){
+          copyBtn.classList.remove('copied');
+          copyBtn.innerHTML = '<span>Copy Link</span>';
+        }, 2000);
       }
       if (navigator.clipboard) {
         navigator.clipboard.writeText(link).then(done).catch(function(){
@@ -558,18 +691,23 @@ const DASHBOARD_HTML = '<!DOCTYPE html><html lang="en"><head>' +
       }
     });
 
+    // WhatsApp share
     document.getElementById('shareBtn').addEventListener('click', function(){
-      var msg = 'Create your AI resume in 5 minutes using ResumeWala.\\n\\nTry it here:\\n' + d.referral_link;
+      var msg = 'Create your AI resume in 5 minutes using ResumeWala.\\n\\nJust speak and your resume is ready.\\n\\nTry it here:\\n' + d.referral_link;
       window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
     });
 
-    // Confetti if user just hit a new milestone since last visit
+    // Carousels
+    setupCarousel('featCarousel', feats.length, 4000);
+    setupCarousel('tipCarousel', tips.length, 4500);
+
+    // Confetti — only when a NEW milestone was just hit
     try {
       var lastSeen = parseInt(localStorage.getItem('rw_last_count') || '-1', 10);
-      var hitNew = (Math.floor(d.referral_count / 5) > Math.floor(lastSeen / 5)) ||
-                   (d.referral_count >= 51 && lastSeen < 51);
-      if (hitNew && d.referral_count > 0) fireConfetti();
-      localStorage.setItem('rw_last_count', String(d.referral_count));
+      var hitNew = (Math.floor(count / 5) > Math.floor(Math.max(lastSeen, 0) / 5) && count >= 5) ||
+                   (count >= 51 && lastSeen < 51);
+      if (hitNew) fireConfetti();
+      localStorage.setItem('rw_last_count', String(count));
     } catch(e){}
   }
 
