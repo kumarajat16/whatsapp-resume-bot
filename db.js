@@ -506,15 +506,15 @@ async function getGeneratedResumeById(id) {
   return result.rows[0] || null;
 }
 
-async function getGeneratedResumesByConversation(conversationId) {
+async function getGeneratedResumesByPhone(phoneNumber) {
   const result = await pool.query(
     `SELECT id, conversation_id, phone_number, pdf_url, docx_url,
             trigger_source, created_at, expires_at,
             (expires_at <= NOW()) AS expired
      FROM generated_resumes
-     WHERE conversation_id = $1
+     WHERE phone_number = $1
      ORDER BY created_at DESC`,
-    [conversationId]
+    [phoneNumber]
   );
   return result.rows;
 }
@@ -674,7 +674,7 @@ module.exports = {
   getUserAdTracking,
   createGeneratedResume,
   getGeneratedResumeById,
-  getGeneratedResumesByConversation,
+  getGeneratedResumesByPhone,
   getLastIncomingMessageTime,
   listTemplates,
   getTemplateByKey,

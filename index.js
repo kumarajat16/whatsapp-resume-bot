@@ -1438,9 +1438,9 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
         ORDER BY rr.user_id, p.created_at DESC
       ),
       generated_count AS (
-        SELECT conversation_id, COUNT(*)::int AS cnt
+        SELECT phone_number, COUNT(*)::int AS cnt
         FROM generated_resumes
-        GROUP BY conversation_id
+        GROUP BY phone_number
       )
       SELECT
         u.id AS user_id,
@@ -1465,7 +1465,7 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
       LEFT JOIN latest_request lr ON lr.user_id = u.id
       LEFT JOIN message_stats ms ON ms.user_id = u.id
       LEFT JOIN payment_info pi ON pi.user_id = u.id
-      LEFT JOIN generated_count gc ON gc.conversation_id = lr.id
+      LEFT JOIN generated_count gc ON gc.phone_number = u.phone_number
     `;
 
     if (start_date) {
@@ -1609,11 +1609,11 @@ app.post('/admin/generate-resume', requireAdminAuth, async (req, res) => {
 
 app.get('/admin/resume-history', requireAdminAuth, async (req, res) => {
   try {
-    const conversationId = req.query.conversation_id;
-    if (!conversationId) {
-      return res.status(400).json({ error: 'conversation_id required' });
+    const phoneNumber = req.query.phone_number;
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'phone_number required' });
     }
-    const rows = await db.getGeneratedResumesByConversation(conversationId);
+    const rows = await db.getGeneratedResumesByPhone(phoneNumber);
     res.json({ resumes: rows });
   } catch (err) {
     console.error('ADMIN /resume-history error:', err);
@@ -2196,7 +2196,7 @@ async function openResumeHistory(conversationId,phone){
   const body=document.getElementById('resumeModalBody');
   body.innerHTML='<div class="loading">Loading...</div>';
   try{
-    const r=await fetch('/admin/resume-history?conversation_id='+encodeURIComponent(conversationId));
+    const r=await fetch('/admin/resume-history?phone_number='+encodeURIComponent(phone));
     if(r.status===401){window.location.reload();return;}
     const data=await r.json();
     if(!data.resumes||data.resumes.length===0){
