@@ -1413,29 +1413,25 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
     const params = [];
     const whereClauses = [];
 
-    // Base query: aggregate messages per user via their resume_requests
+    // One row per resume_request so admin can pick the request with full
+    // chat/audio context (later requests after a generation are often empty).
+    // Users with zero resume_requests still appear as a single 'no_session' row.
     let sql = `
-      WITH latest_request AS (
-        SELECT DISTINCT ON (user_id) user_id, status, id, pdf_url
-        FROM resume_requests
-        ORDER BY user_id, created_at DESC
-      ),
-      message_stats AS (
+      WITH per_request_messages AS (
         SELECT
-          rr.user_id,
+          rr.id AS resume_request_id,
           MAX(m.created_at) AS last_message_timestamp,
-          COUNT(*) FILTER (WHERE m.direction = 'incoming') AS chat_depth,
-          COUNT(*) FILTER (WHERE m.message_type = 'audio') AS audio_count,
-          COUNT(*) FILTER (WHERE m.message_type = 'document') AS document_count
-        FROM messages m
-        JOIN resume_requests rr ON m.resume_request_id = rr.id
-        GROUP BY rr.user_id
+          COUNT(m.id) FILTER (WHERE m.direction = 'incoming')::int AS chat_depth,
+          COUNT(m.id) FILTER (WHERE m.message_type = 'audio')::int AS audio_count,
+          COUNT(m.id) FILTER (WHERE m.message_type = 'document')::int AS document_count
+        FROM resume_requests rr
+        LEFT JOIN messages m ON m.resume_request_id = rr.id
+        GROUP BY rr.id
       ),
-      payment_info AS (
-        SELECT DISTINCT ON (rr.user_id) rr.user_id, p.status AS payment_status, p.updated_at AS payment_at
-        FROM payments p
-        JOIN resume_requests rr ON p.resume_request_id = rr.id
-        ORDER BY rr.user_id, p.created_at DESC
+      per_request_payment AS (
+        SELECT DISTINCT ON (resume_request_id) resume_request_id, status AS payment_status
+        FROM payments
+        ORDER BY resume_request_id, created_at DESC
       ),
       generated_count AS (
         SELECT phone_number, COUNT(*)::int AS cnt
@@ -1445,48 +1441,49 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
       SELECT
         u.id AS user_id,
         u.phone_number,
-        ms.last_message_timestamp,
-        COALESCE(lr.status, 'no_session') AS state,
-        COALESCE(ms.chat_depth, 0)::int AS chat_depth,
-        COALESCE(ms.audio_count, 0)::int AS audio_count,
-        COALESCE(ms.document_count, 0)::int AS document_count,
-        lr.pdf_url,
-        lr.id AS latest_request_id,
+        rr.id AS latest_request_id,
+        rr.created_at AS request_created_at,
+        COALESCE(prm.last_message_timestamp, rr.created_at) AS last_message_timestamp,
+        COALESCE(rr.status, 'no_session') AS state,
+        COALESCE(prm.chat_depth, 0) AS chat_depth,
+        COALESCE(prm.audio_count, 0) AS audio_count,
+        COALESCE(prm.document_count, 0) AS document_count,
+        rr.pdf_url,
         COALESCE(gc.cnt, 0) AS generated_resume_count,
-        COALESCE(pi.payment_status, 'none') AS payment_status,
+        COALESCE(prp.payment_status, 'none') AS payment_status,
         u.last_followup_sent_at,
         CASE
-          WHEN lr.status IN ('awaiting_input', 'collecting_data') THEN 1
-          WHEN lr.status = 'payment_pending' THEN 2
-          WHEN lr.status IN ('payment_completed', 'generating') THEN 3
+          WHEN rr.status IN ('awaiting_input', 'collecting_data') THEN 1
+          WHEN rr.status = 'payment_pending' THEN 2
+          WHEN rr.status IN ('payment_completed', 'generating') THEN 3
           ELSE NULL
         END AS dropoff_stage
       FROM users u
-      LEFT JOIN latest_request lr ON lr.user_id = u.id
-      LEFT JOIN message_stats ms ON ms.user_id = u.id
-      LEFT JOIN payment_info pi ON pi.user_id = u.id
+      LEFT JOIN resume_requests rr ON rr.user_id = u.id
+      LEFT JOIN per_request_messages prm ON prm.resume_request_id = rr.id
+      LEFT JOIN per_request_payment prp ON prp.resume_request_id = rr.id
       LEFT JOIN generated_count gc ON gc.phone_number = u.phone_number
     `;
 
     if (start_date) {
       params.push(start_date);
-      whereClauses.push(`ms.last_message_timestamp >= $${params.length}`);
+      whereClauses.push(`COALESCE(prm.last_message_timestamp, rr.created_at) >= $${params.length}`);
     }
     if (end_date) {
       params.push(end_date);
-      whereClauses.push(`ms.last_message_timestamp <= $${params.length}`);
+      whereClauses.push(`COALESCE(prm.last_message_timestamp, rr.created_at) <= $${params.length}`);
     }
     if (state) {
       params.push(state);
-      whereClauses.push(`lr.status = $${params.length}`);
+      whereClauses.push(`COALESCE(rr.status, 'no_session') = $${params.length}`);
     }
     if (chat_depth) {
       if (chat_depth === '1-5') {
-        whereClauses.push(`COALESCE(ms.chat_depth, 0) BETWEEN 1 AND 5`);
+        whereClauses.push(`COALESCE(prm.chat_depth, 0) BETWEEN 1 AND 5`);
       } else if (chat_depth === '6-10') {
-        whereClauses.push(`COALESCE(ms.chat_depth, 0) BETWEEN 6 AND 10`);
+        whereClauses.push(`COALESCE(prm.chat_depth, 0) BETWEEN 6 AND 10`);
       } else if (chat_depth === '10+') {
-        whereClauses.push(`COALESCE(ms.chat_depth, 0) > 10`);
+        whereClauses.push(`COALESCE(prm.chat_depth, 0) > 10`);
       }
     }
 
@@ -1494,7 +1491,7 @@ app.get('/admin/conversations', requireAdminAuth, async (req, res) => {
       sql += ' WHERE ' + whereClauses.join(' AND ');
     }
 
-    sql += ' ORDER BY ms.last_message_timestamp DESC NULLS LAST LIMIT 500';
+    sql += ' ORDER BY COALESCE(prm.last_message_timestamp, rr.created_at) DESC NULLS LAST LIMIT 500';
 
     const result = await db.pool.query(sql, params);
     res.json({ rows: result.rows });
